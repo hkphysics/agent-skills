@@ -2,6 +2,7 @@
 * keep original spacing and whitespace when modifying files
 * when outputing a blank line, do not put white space in the line
 * NEVER commit or push a git change without a request
+* NEVER include or transmit an api secret key
 * when generating python code, use pythonic idioms
 * assume modern python (3.11+)
 * when generating python code, use python 3.9+ types (avoid typing types if intrinsic types are available)
