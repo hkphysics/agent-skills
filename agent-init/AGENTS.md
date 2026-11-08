@@ -5,7 +5,8 @@
 * NEVER embed API keys/secrets in prompts or code  
 * use pythonic, vectorized idioms (Python ≥3.11)  
 * type hints: intrinsic `list`, `dict`, etc. (Python ≥3.9)  
-* code should be elegant, optimized, and simple (no duplication)  
+* code should be elegant, optimized, and simple (no duplication)
+* ignore backup files of form *.bak *~ and #*#
 
 ### Skills
 - Scaffold: `pi skill create <name>` → `<name>/` with `SKILL.md`, `index.py`, `tests/`, `README.md`  
