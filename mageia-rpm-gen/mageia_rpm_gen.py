@@ -3,11 +3,19 @@
 Mageia RPM generator.
 
 Given a source RPM (local file or URL) or a Fedora dist-git package name,
-extracts the spec, applies Mageia conventions, and builds a new RPM.
+extracts the spec, applies Mageia conventions, generates a source RPM, and then
+builds a binary RPM from that source RPM.
+
+The build always uses the SRPM-first workflow:
+  1. Generate the source RPM (`rpmbuild -bs`).
+  2. Build the binary RPM from the source RPM (`rpmbuild --rebuild <srpm>`).
+
+Since all sources are carried inside the source RPM, the binary RPM can be
+built offline from the source RPM.
 
 Usage:
     # From local SRPM
-    python mageia_rpm_gen.py --srpm /path/to/pkg-1.0-1.fc40.src.rpm
+    python mageia_rpm_gen.py --srpm /path/to/pkg-1.0-1.mga11.src.rpm
 
     # From RPM URL (e.g., GitHub release)
     python mageia_rpm_gen.py --url https://github.com/.../pkg-1.0-1.x86_64.rpm
@@ -128,13 +136,19 @@ def extract_spec(rpm_path):
             return spec_path
 
     # Fallback: extract to temp dir and find .spec
+    spec_file = None
     with tempfile.TemporaryDirectory() as tmpdir:
         run(["sh", "-c", f"cd {tmpdir} && rpm2cpio {rpm_path} | cpio -idmv"], check=False)
         for root, _, files in os.walk(tmpdir):
             for f in files:
                 if f.endswith(".spec"):
-                    return os.path.join(root, f)
-    sys.exit(f"Could not extract spec from {rpm_path}")
+                    spec_file = os.path.join(root, f)
+                    break
+            if spec_file:
+                break
+    if not spec_file:
+        sys.exit(f"Could not extract spec from {rpm_path}")
+    return spec_file
 
 
 def fetch_fedora_spec(package_name, dest_dir):
@@ -207,7 +221,12 @@ def apply_mageia_modifications(spec_content, overrides=None):
 
 
 def build_rpm(spec_path, output_dir, use_mock=False, keep_build=False):
-    """Build RPM from spec file."""
+    """Build source RPM first, then binary RPM from the source RPM.
+
+    The source RPM is generated with `rpmbuild -bs`, then the binary RPM is
+    built from it with `rpmbuild --rebuild <srpm>`. Because all sources are
+    carried inside the source RPM, the binary RPM can be built offline.
+    """
     os.makedirs(output_dir, exist_ok=True)
 
     if use_mock:
@@ -221,11 +240,27 @@ def build_rpm(spec_path, output_dir, use_mock=False, keep_build=False):
             if item != os.path.basename(spec_path):
                 shutil.copy2(os.path.join(spec_dir, item), os.path.join(output_dir, "SOURCES", item))
 
+        # Step 1: generate the source RPM from the spec.
         result = run([
-            "rpmbuild", "-bb",
+            "rpmbuild", "-bs",
             "--define", f"_topdir {output_dir}",
             "--define", f"_sourcedir {output_dir}/SOURCES",
             spec_path
+        ], check=False)
+        if result.returncode != 0:
+            sys.exit(f"Source RPM generation failed:\n{result.stderr}")
+
+        srpms = sorted(Path(output_dir, "SRPMS").glob("*.src.rpm"))
+        if not srpms:
+            sys.exit("No source RPM was generated")
+        srpm = str(srpms[0])
+        print(f"Source RPM generated: {srpm}")
+
+        # Step 2: build the binary RPM from the source RPM.
+        result = run([
+            "rpmbuild", "--rebuild", srpm,
+            "--define", f"_topdir {output_dir}",
+            "--define", f"_sourcedir {output_dir}/SOURCES",
         ], check=False)
 
     if result.returncode != 0:
@@ -260,7 +295,7 @@ def main():
     parser.add_argument("-s", "--spec-out", help="Write modified spec to this path")
     parser.add_argument("-k", "--keep-build", action="store_true", help="Keep build directory")
     parser.add_argument("--mock", action="store_true", help="Build with mock instead of rpmbuild")
-    parser.add_argument("--release", default="1%{?dist}", help="Release string (default: 1%{?dist})")
+    parser.add_argument("--release", default="1%{?dist}", help="Release string (default: 1)")
     parser.add_argument("-g", "--group", help="Mageia RPM group (see --list-groups)")
 
     args = parser.parse_args()
