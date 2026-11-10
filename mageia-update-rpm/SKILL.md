@@ -29,7 +29,9 @@ Rules:
   2. `~/mgarepo` (user's home directory)
 - If neither exists, create `./mgarepo` in the current directory.
 - Do not search deeper than these two paths; if the user keeps `mgarepo` elsewhere, ask them for its location instead of guessing.
-- `cd` into the `mgarepo` directory **before** running `mgarepo co`, so the package lands in `<mgarepo>/<package>/`.
+- To check out a package, first `cd` into the `mgarepo` directory, then run `mgarepo co <package>`; the package lands in `<mgarepo>/<package>/`.
+- Run `mgarepo co` only from inside the `mgarepo` parent directory — never from a directory that is not the mgarepo parent.
+- After checkout, confirm the package files are under `<mgarepo>/<package>/` (with `SPECS/` and `SOURCES/` inside); if they ended up in the current directory instead, move them into the correct `<mgarepo>/<package>/` subdirectory and re-run the checkout.
 - Run every step after checkout from inside `<mgarepo>/<package>/`; spec paths below (`SPECS/<package>.spec`) are relative to it.
 
 ## Workflow
@@ -45,6 +47,7 @@ If it appears that the instruction has already been performed then skip to the n
      This creates `mgarepo/<package>/` containing the SPECS/ and SOURCES/ layout from Mageia's package repository.
    - Stop if the package does not exist in the Mageia repository.
    - `cd` into `mgarepo/<package>/`; all following steps assume this working directory.
+   - Never run `mgarepo co` from a directory outside the mgarepo parent — it must be run from inside the mgarepo directory itself.
 
 2. **Look online** for a newer version of the package (upstream website, GitHub releases, SourceForge, PyPI, etc.). Determine the new version number and the source file URL.
 
