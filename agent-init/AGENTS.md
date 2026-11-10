@@ -7,6 +7,7 @@
 * type hints: intrinsic `list`, `dict`, etc. (Python ≥3.9)  
 * code should be elegant, optimized, and simple (no duplication)
 * ignore backup files of form *.bak *~ and #*#
+* do not run a find of the entire filesystem to look for a file.
 
 ### Skills
 - Scaffold: `pi skill create <name>` → `<name>/` with `SKILL.md`, `index.py`, `tests/`, `README.md`  
