@@ -10,7 +10,9 @@ Update an existing Mageia package to a newer upstream version.
 ## Instructions
 * Minimize spec changes when updating packages.
 * Use `bm` for builds and not `rpmbuild` directly. (`bm` is Mageia's build manager wrapper around rpmbuild.)
-* All checkouts and builds live under a single parent directory named `mgarepo`. See "Build location" below.
+* All checkouts and builds live under a single parent directory named
+  `mgarepo`. See "Build location" below.
+* Do not change sha1.list hash file
 
 ## Build location
 
@@ -33,6 +35,8 @@ Rules:
 - Run `mgarepo co` only from inside the `mgarepo` parent directory — never from a directory that is not the mgarepo parent.
 - After checkout, confirm the package files are under `<mgarepo>/<package>/` (with `SPECS/` and `SOURCES/` inside); if they ended up in the current directory instead, move them into the correct `<mgarepo>/<package>/` subdirectory and re-run the checkout.
 - Run every step after checkout from inside `<mgarepo>/<package>/`; spec paths below (`SPECS/<package>.spec`) are relative to it.
+- The logs produced by bm are in the SPECS directory.  Please look at
+  those to check for errors
 
 ## Workflow
 
@@ -54,7 +58,8 @@ If it appears that the instruction has already been performed then skip to the n
 3. **Modify the spec file** (`SPECS/<package>.spec`):
    - Bump `Version:` to the new upstream version.
    - Update `Source0:` (and any other `Source:` lines) to point at the new source file.
-   - Optionally bump `Release:`.
+   - If the new version is a versioned release (i.e., not a prerelease), set the release counter to 1; otherwise bump `Release:`.
+   - Note: `%mkrel` is a valid Mageia macro (it expands to `<release>.mga11`); use it for the `Release:` tag (e.g. `Release: %mkrel 1`).
 
 4. **For Rust packages, redo the vendor package.**
    If the spec uses `%cargo_prep`, `%{crates_source}`, or `cargo_generate_buildrequires`, the crate dependencies are vendored and must be regenerated for the new version:
@@ -65,36 +70,51 @@ If it appears that the instruction has already been performed then skip to the n
    ```
    `rust2rpm -V auto` resolves the latest compatible dependency set and produces a vendor tarball containing all vendored crate sources, so the build runs fully offline. The crate name comes from the `%global crate` line, not the `rust-` prefixed package name.
 
-5. **Download the updated sources** into `SOURCES/`:
+5. **For Go packages, apply the Go-specific build fixes.**
+   Go builds fail in three predictable ways that are easy to miss:
+
+   - **The Go module path may have changed.** The import path comes from `go.mod`, not the GitHub URL. If a release moved the module (e.g. buildah `github.com/containers/buildah` → `go.podman.io/buildah`), update the spec's `import_path` and the GOPATH symlink in `%build` to the new module path even though the download URL (`git0`/`Source:`) still points at GitHub. Check the new `go.mod` first.
+   - **`go build` chokes on VCS stamping in a mixed git+svn tree.** The `bm`/`mgarepo` tree is SVN; `%autosetup -Sgit` leaves an inner `.git`. A `go build` invoked by the spec's `Makefile` (module mode) then dies with `error obtaining VCS status: multiple VCS detected: git ... and svn`. Fix by exporting `GOFLAGS=-buildvcs=false` in the affected `%build`/`%install` section (and/or `rm -rf .git` in `%prep` after `%autosetup`).
+   - **The Go module cache is read-only and blocks cleanup.** A previous/failed build leaves `_build/pkg/mod/...` files at mode `r-x` (read-only), so `rm -rf` of the build dir fails with `operation not permitted`. Run `chmod -R u+w BUILD` before removing it.
+
+6. **Download the updated sources** into `SOURCES/`:
    ```bash
    spectool -g SPECS/<package>.spec
    ```
-   `spectool` reads the `Source:` URLs from the spec and fetches them. For Rust packages this step downloads the `.crate` file if the vendor tarball wasn't already present from step 4.
+   `spectool` reads the `Source:` URLs from the spec and fetches them.
+   Note: `spectool -g` writes downloaded files into the current working
+   directory; move them into `SOURCES/` for a proper build.
+   For Rust packages this step downloads the `.crate` file if the vendor tarball wasn't already present from step 4.
 
-6. **Do an unpack / test build**:
+7. **Do an test unpack**:
    ```bash
    bm -r SPECS/<package>.spec   # or -bb for binary only
    ```
+   
+8. **Fix unpacking errors**
+   - If the unpack creates an error look in BUILD to see if the unpack
+     directory matches and modify the SPEC if it does not
 
-7. **Fix dependency errors**:
+9. **Fix dependency errors**:
    If there are errors with missing dependencies, instruct the user to install them by running `urpmi` against the spec file. If the user responds with an error log due to broken dependencies, fix up the dependencies.
 
-8. **Fix errors due to patches**. If the build fails because an old patch no longer applies:
+10. **Fix errors due to patches**. If the build fails because an old patch no longer applies:
    - Inspect the patch (`Patch01`, etc.) in `SPECS/` or `SOURCES/`.
    - Drop the patch if the fix is already upstream, or refresh it with `diff -u` against the new sources.
    - Remove or update `Patch:` lines and `%patch` macros accordingly.
    - Re-run `spectool -g` and `bm` until it succeeds.
 
-9. **Do a test build**
+11. **Do a test build**
    - Once the build requires are satisfied, do a test build with:
      ```bash
      bm SPECS/<package>.spec
      ```
+12. **Verify that the build has produced RPMS/SRPMS**
 
-10. **Fix compile issues**
+13. **Fix compile issues**
     - If there are any compile issues, create a new patch to fix those issues or modify build instructions in the spec.
 
-11. **Look at the Fedora repo** for recent patches to apply:
+14. **Look at the Fedora repo** for recent patches to apply:
     - Check the Fedora dist-git package page (`https://src.fedoraproject.org/rpms/<package>`) for newer patch files and spec changes.
     - Download any relevant patches into `SOURCES/` and add `Patch:` lines plus `%patch` macros to the spec.
 
@@ -104,6 +124,7 @@ If it appears that the instruction has already been performed then skip to the n
 - Each BuildRequires: should be on a single line.
 - Make sure that the BuildRequires is architecture independent (i.e. do not include `lib64<package>`).
 - Use `bm` rather than `rpmbuild` for rpm/srpm builds.
+- If the spec file contains a `%generate_buildrequires` section (for example one driven by `%pyproject_buildrequires`), the BuildRequires generated by that macro must be inserted into the spec file as explicit `BuildRequires:` lines. Mageia's `urpmi` cannot install dynamically generated build requires, so they have to be written into the spec file explicitly.
 
 ## Usage
 
