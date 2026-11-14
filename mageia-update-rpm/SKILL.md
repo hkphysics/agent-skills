@@ -14,6 +14,7 @@ Update an existing Mageia package to a newer upstream version.
   `mgarepo`. See "Build location" below.
 * Do not change sha1.list hash file
 * Do not include `-Wl,--allow-shlib-undefined` in LDFLAGS. Use version-independent linking via `%{python3_version}` instead (see step 13).
+* The log files may be in another language such as Chinese.
 
 ## Build location
 
@@ -123,6 +124,29 @@ If it appears that the instruction has already been performed then skip to the n
 14. **Look at the Fedora repo** for recent patches to apply:
     - Check the Fedora dist-git package page (`https://src.fedoraproject.org/rpms/<package>`) for newer patch files and spec changes.
     - Download any relevant patches into `SOURCES/` and add `Patch:` lines plus `%patch` macros to the spec.
+
+15.  **Fix changes to files**
+     - If the build fails because of unpackaged files or missing files
+       fix the rpm files list to take this into account
+
+## Updating a list of packages
+
+When asked to update a list of packages (rpms), process them one at a time, in this order:
+
+1. Check out the package (`mgarepo co <package>`) and update the
+   version and release in the spec (steps 2–3 of the workflow).
+2. make sure that all of the sources are updated in the SOURCES
+   directory using spectool
+3. Attempt the prep stage only, to verify the new sources unpack and `%prep` applies:
+   ```bash
+   bm -p SPECS/<package>.spec
+   ```
+4. If prep fails because dependencies are missing, do not stop the whole run:
+   - Inform the user which dependencies the package needs (from the bm log in SPECS/) and that it is being skipped.
+   - Skip that package and move on to the next one in the list.
+5. **Build every package that passed prep with `bm SPECS/<package>.spec`** and report success or failure per package. **Note: a package is not fully updated until it has been built with the new version.**
+
+The skill will attempt to build all packages it can, skipping only those with missing build dependencies.
 
 ## Build Requires
 
