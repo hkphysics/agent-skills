@@ -13,6 +13,7 @@ Update an existing Mageia package to a newer upstream version.
 * All checkouts and builds live under a single parent directory named
   `mgarepo`. See "Build location" below.
 * Do not change sha1.list hash file
+* Do not include `-Wl,--allow-shlib-undefined` in LDFLAGS. Use version-independent linking via `%{python3_version}` instead (see step 13).
 
 ## Build location
 
@@ -24,7 +25,12 @@ Everything for one package lives under a single parent directory named `mgarepo`
     SPECS/<package>.spec
     SOURCES/
 ```
-
+     This creates `mgarepo/<package>/` containing the SPECS/ and SOURCES/ layout from Mageia's package repository.
+   - Stop if the package does not exist in the Mageia repository.
+   - `cd` into `mgarepo/<package>/`; all following steps assume this working directory.
+   - Never run `mgarepo co` from a directory outside the mgarepo
+    parent — it must be run from inside the mgarepo directory itself.
+	
 Rules:
 - Search for an existing `mgarepo` parent directory in this order:
   1. `./mgarepo` (current working directory)
@@ -35,8 +41,7 @@ Rules:
 - Run `mgarepo co` only from inside the `mgarepo` parent directory — never from a directory that is not the mgarepo parent.
 - After checkout, confirm the package files are under `<mgarepo>/<package>/` (with `SPECS/` and `SOURCES/` inside); if they ended up in the current directory instead, move them into the correct `<mgarepo>/<package>/` subdirectory and re-run the checkout.
 - Run every step after checkout from inside `<mgarepo>/<package>/`; spec paths below (`SPECS/<package>.spec`) are relative to it.
-- The logs produced by bm are in the SPECS directory.  Please look at
-  those to check for errors
+- The logs produced by bm are in the SPECS directory.  Please look at those to check for errors
 
 ## Workflow
 
@@ -48,10 +53,6 @@ If it appears that the instruction has already been performed then skip to the n
      ```bash
      mgarepo co <package>
      ```
-     This creates `mgarepo/<package>/` containing the SPECS/ and SOURCES/ layout from Mageia's package repository.
-   - Stop if the package does not exist in the Mageia repository.
-   - `cd` into `mgarepo/<package>/`; all following steps assume this working directory.
-   - Never run `mgarepo co` from a directory outside the mgarepo parent — it must be run from inside the mgarepo directory itself.
 
 2. **Look online** for a newer version of the package (upstream website, GitHub releases, SourceForge, PyPI, etc.). Determine the new version number and the source file URL.
 
@@ -113,6 +114,11 @@ If it appears that the instruction has already been performed then skip to the n
 
 13. **Fix compile issues**
     - If there are any compile issues, create a new patch to fix those issues or modify build instructions in the spec.
+    - For Python packages that build C/Cython extensions with the Mavenia hardened `-Wl,--no-undefined` linker flag, add an LDFLAGS export in the spec's `%build` section to link against the Python shared library, so the build does not fail with undefined references to Python C API symbols (e.g. `_Py_NoneStruct`, `PyUnicode_FromString`). A version-independent form is:
+      ```spec
+      export LDFLAGS="-lpython%{python3_version}"
+      ```
+      (Place before the Python build macro such as `%pyproject_wheel`.)
 
 14. **Look at the Fedora repo** for recent patches to apply:
     - Check the Fedora dist-git package page (`https://src.fedoraproject.org/rpms/<package>`) for newer patch files and spec changes.
@@ -147,9 +153,9 @@ The agent performs every step above and reports the result (built RPM, applied p
 ## Search
 - Prefer using `urpmq` to find the list of packages.
 - Use `urpmq --provides <package>` to find the tags which can be used to include the package in a BuildRequires.
-
+ 
 ## What it does not do
 
 - It does not upload the new RPM to Mageia's build system (koji).
-- It does not create a new package from scratch (use `mageia-rpm-gen` for that).
+- It does not create a new package from scratch (use `mageia-rpm-gen` for that)
 - It does not choose the "correct" version for you; it reports candidate versions found online and applies the one you (or policy) selects.
