@@ -9,12 +9,13 @@ Update an existing Mageia package to a newer upstream version.
 
 ## Instructions
 * Minimize spec changes when updating packages.
-* Use `bm` for builds and not `rpmbuild` directly. (`bm` is Mageia's build manager wrapper around rpmbuild.)
+* **Never invoke `rpmbuild` directly — always use `bm`, even for diagnostics.** `bm` builds inside the `<mgarepo>/<package>/` layout and reads the correct `SPECS/`/`SOURCES/`, writing `BUILD/`, `RPMS/`, `SRPMS/` there. A bare `rpmbuild -ba/-bp/-bb` writes to `~/rpmbuild` and looks in `~/rpmbuild/SOURCES`, so it uses the wrong source tree and the wrong output location. To investigate a failure, read the log `SPECS/log.<package>` that `bm` writes, or re-run `bm -p SPECS/<package>.spec` (prep) / `bm -r SPECS/<package>.spec` (prep only) / `bm SPECS/<package>.spec` (full build). Never type `rpmbuild ...` by hand; `bm` calls `rpmbuild` internally, which is fine.
 * All checkouts and builds live under a single parent directory named
   `mgarepo`. See "Build location" below.
-* Do not change sha1.list hash file
+* Do not change the `sha1.lst` hash file. Leave it untouched even though the `SOURCES/` files no longer match it; a later manual `mgarepo sync` updates it. Do not worry about the mismatch between `SOURCES/` and `sha1.lst` — `bm`/`rpmbuild` do not read `sha1.lst` during builds. (The original instructions wrote `sha1.list`; the actual file is `sha1.lst`.)
 * Do not include `-Wl,--allow-shlib-undefined` in LDFLAGS. Use version-independent linking via `%{python3_version}` instead (see step 13).
 * The log files may be in another language such as Chinese.
+* **Use macros instead of hardcoded strings.** In the spec, any string that varies from version to version — URLs, package names, version numbers, build tags, archive/file names — must be written with macros (`%{version}`, `%{name}`, `%{url}`, `%{built_tag}`, etc.) rather than the literal value. Bump `Version:` and let the macros expand; do not paste `foo-1.2.3` or `.../foo-1.2.3.tar.gz` into `Source:` lines. See "Spec macros" below.
 
 ## Build location
 
@@ -56,10 +57,12 @@ If it appears that the instruction has already been performed then skip to the n
      ```
 
 2. **Look online** for a newer version of the package (upstream website, GitHub releases, SourceForge, PyPI, etc.). Determine the new version number and the source file URL.
+   Additionally, search for security advisories (CVE, vendor advisories, Mageia security tracker) for the package; collect any relevant security patches and note them for inclusion.
 
 3. **Modify the spec file** (`SPECS/<package>.spec`):
+   - If security patches are needed, add `Patch:` lines and `%patch` macros, and adjust `Version:`/`Release:` if needed.
    - Bump `Version:` to the new upstream version.
-   - Update `Source0:` (and any other `Source:` lines) to point at the new source file.
+   - Update `Source0:` (and any other `Source:` lines) to point at the new source file — but write it with macros (`%{version}`, `%{name}`, `%{url}`, `%{built_tag}`) so it tracks `Version:` instead of pasting the new literal string.
    - If the new version is a versioned release (i.e., not a prerelease), set the release counter to 1; otherwise bump `Release:`.
    - Note: `%mkrel` is a valid Mageia macro (it expands to `<release>.mga11`); use it for the `Release:` tag (e.g. `Release: %mkrel 1`).
 
@@ -102,7 +105,8 @@ If it appears that the instruction has already been performed then skip to the n
 
 10. **Fix errors due to patches**. If the build fails because an old patch no longer applies:
    - Inspect the patch (`Patch01`, etc.) in `SPECS/` or `SOURCES/`.
-   - Drop the patch if the fix is already upstream, or refresh it with `diff -u` against the new sources.
+   - Keep Mageia-related patches and modify them so they apply against the new code (refresh with `diff -u` against the new sources, update context lines, or rebase hunks).
+   - Drop a patch only if the fix it provides has already been incorporated upstream in the new version (verify against the upstream source or release notes).
    - Remove or update `Patch:` lines and `%patch` macros accordingly.
    - Re-run `spectool -g` and `bm` until it succeeds.
 
@@ -148,12 +152,22 @@ When asked to update a list of packages (rpms), process them one at a time, in t
 
 The skill will attempt to build all packages it can, skipping only those with missing build dependencies.
 
+## Spec macros
+
+Keep spec lines version-independent so a version bump touches only `Version:`:
+
+- Prefer macros over literals: `%{version}`, `%{name}`, `%{url}` (from a `%global url` or `%global git0`), `%{built_tag}`/`%{shortcommit}` for git checkouts, and existing `%define`/`%global` values.
+- A `Source:` should read `%{url}/archive/%{built_tag}/%{name}-%{version}.tar.gz`, not `https://github.com/.../archive/v1.2.3/foo-1.2.3.tar.gz`.
+- Define reusable prefixes once (`%global url https://...`, `%global crate foo`, `%define amversion ...`) and reference them, rather than repeating the literal.
+- When a pre-existing spec already uses macros, keep that style; do not introduce new hardcoded copies of the same value.
+- Hardcoding is acceptable only for values that never track the upstream version (e.g. `Epoch:`), or when no suitable macro exists yet — in which case define one.
+
 ## Build Requires
 
 - When creating BuildRequires: prefer `pkgconfig(<package>)` tags over `<package>-devel`.
 - Each BuildRequires: should be on a single line.
 - Make sure that the BuildRequires is architecture independent (i.e. do not include `lib64<package>`).
-- Use `bm` rather than `rpmbuild` for rpm/srpm builds.
+- Use `bm` rather than `rpmbuild` for rpm/srpm builds. Never run `rpmbuild` directly (see the build rule above): it uses `~/rpmbuild` instead of the package tree.
 - If the spec file contains a `%generate_buildrequires` section (for example one driven by `%pyproject_buildrequires`), the BuildRequires generated by that macro must be inserted into the spec file as explicit `BuildRequires:` lines. Mageia's `urpmi` cannot install dynamically generated build requires, so they have to be written into the spec file explicitly.
 - Before a test build, make sure the spec's `BuildRequires:` covers every dependency required by the package's build system: all libraries probed via `./configure` (pkg-config checks, `AC_SEARCH_LIBS`, header checks) and any CMake `find_package` / pkg-config probes must have a matching `BuildRequires:` line. Missing entries are satisfied only by packages already present on the build machine, so the build can succeed there while clean build roots (mock, build daemons) fail or the resulting RPM will not install cleanly — add the missing `BuildRequires:` entries before building.
 
@@ -180,6 +194,7 @@ The agent performs every step above and reports the result (built RPM, applied p
  
 ## What it does not do
 
-- It does not upload the new RPM to Mageia's build system (koji).
-- It does not create a new package from scratch (use `mageia-rpm-gen` for that)
-- It does not choose the "correct" version for you; it reports candidate versions found online and applies the one you (or policy) selects.
+It does not upload the new RPM to Mageia's build system (koji).
+It does not create a new package from scratch (use `mageia-rpm-gen` for that).
+It does not choose the "correct" version for you; it reports candidate versions found online and applies the one you (or policy) selects.
+It does not delete successful build information - successful RPM builds are preserved, but intermediate build state can be cleaned up after verification.
