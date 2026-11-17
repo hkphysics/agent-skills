@@ -7,21 +7,42 @@ description: Generate Mageia RPMs from various sources (SRPM, URL, or Fedora dis
 
 Build a Mageia-compatible RPM from various sources: local SRPM, URL, or Fedora dist-git package name.
 
+## Instructions
+* **Never invoke `rpmbuild` directly — always use `bm`, even for diagnostics.** `bm` builds inside the `<mgarepo>/<package>/` layout and reads the correct `SPECS/`/`SOURCES/`, writing `BUILD/`, `RPMS/`, `SRPMS/` there. A bare `rpmbuild -ba/-bp/-bb` writes to `~/rpmbuild` and looks in `~/rpmbuild/SOURCES`, so it uses the wrong source tree and the wrong output location. To investigate a failure, read the log `SPECS/log.<package>` that `bm` writes, or re-run `bm -p SPECS/<package>.spec` (prep) / `bm -r SPECS/<package>.spec` (prep only) / `bm SPECS/<package>.spec` (full build). Never type `rpmbuild ...` by hand; `bm` calls `rpmbuild` internally, which is fine.
+* All checkouts and builds live under a single parent directory named
+  `mgarepo`. See "Build location" below.
+
+
 ## Workflow
-
-Every RPM build uses the **SRPM-first workflow**:
-
-1. **Search first.** Before creating any RPM, search the web, the
-   Fedora and Opensuse  repositories, and rpmfind.net to see whether
+1. The build should in in Build location.  The name of the package
+   should be from the SPEC file or using standard mageia conventions
+2. **Search first.** Before creating any RPM, search the web, the
+   github, Fedora and Opensuse  repositories, and rpmfind.net to see whether
    an SRPM (or spec) for the same version already 
    exists. Reuse it directly and convert it to Mageia instead of
    writing a spec from scratch.
-2. If there is a Fedora or Opensuse SRPM for the package then attempt
+3. If there is a Fedora or Opensuse SRPM for the package then attempt
    convert that SRPM to Mageia conventions
-3. **Generate the source RPM** from the spec with `rpmbuild -bs`.
-4. **Build the binary RPM from the source RPM** with `rpmbuild --rebuild <srpm>`.
+4. If there is no SPEC and the file is a rust crate then
+   generate the spec file using rust2rpm and if python use pyp2rpm
+5. Use spectool to pull the source files into the SOURCES
+6. Do a test build with bm
 
-The binary RPM is always produced from the source RPM that was just generated, so the whole build starts from the source RPM and can be repeated offline.
+## Build location
+
+Everything for one package lives under a single parent directory named `mgarepo`:
+
+```
+<mgarepo>/                <- parent directory (created if missing)
+  <package>/              <- one subdirectory per package
+    SPECS/<package>.spec
+    SOURCES/
+```
+     This creates `mgarepo/<package>/` containing the SPECS/ and SOURCES/ layout from Mageia's package repository.
+   - Stop if the package does not exist in the Mageia repository.
+   - `cd` into `mgarepo/<package>/`; all following steps assume this working directory.
+   - Never run `mgarepo co` from a directory outside the mgarepo
+    parent — it must be run from inside the mgarepo directory itself.
 
 ## Usage
 
@@ -58,8 +79,6 @@ When generating an RPM from Rust, the source RPM must include a **vendor package
    rust2rpm -t mageia -V auto <crate>
    ```
    This produces a spec file plus a vendor tarball (e.g. `eza-0.23.4-vendor.tar.xz`).
-2. Generate the source RPM from that spec (`rpmbuild -bs`).
-3. Build the binary RPM from the source RPM (via this generator with `--srpm`, or directly with `rpmbuild --rebuild <srpm>`).
 
 Because the vendored sources tarball is carried inside the source RPM, the binary RPM build runs fully offline (vendored sources only).
 
@@ -97,7 +116,7 @@ Common groups for applications:
 
 ## Dependencies
 
-- `rpm`, `rpmbuild`, `wget`, `git` commands must be available in the PATH
+- `rpm`, `bm`, `wget`, `git` commands must be available in the PATH
 - For `--mock`: `mock` command must be available
 
 ## Location
