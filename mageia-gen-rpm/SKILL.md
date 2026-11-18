@@ -70,6 +70,7 @@ python mageia_rpm_gen.py --srpm pkg.src.rpm -g Applications/Graphics
 1. When converting to mageia specs make sure that the SRPM uses mageia
    libraries.
 2. **Never hardcode library directory paths** such as `/usr/lib64` or `/usr/lib` — use the `%{_libdir}` macro (e.g. `/usr/lib64` on x86_64, `/usr/lib` on ARM). The same applies to any other filename component: build tags, archive names, package names, URLs, etc. Write them with macros (`%{version}`, `%{name}`, `%{url}`, `%{built_tag}`, `%{shortcommit}`) rather than literal values — see "Mageia Library Conventions" above and "Spec macros" below.
+3. **Do not list `.debug` files in `%files`.** Debug info is automatically extracted and packaged by `find-debuginfo` into the `-debuginfo` subpackage (or `-debugsource`). Manually listing a `.debug` path in `%files` duplicates the file — it ends up in both the main package and the debuginfo package, and on architectures where the path differs (e.g. `/usr/lib` vs `/usr/lib64`) it breaks the build with a `File not found` error. Never add entries like `/usr/lib/debug/%{_libdir}/lib%{name}.so.*.debug` to `%files`; let the debuginfo machinery handle it.
 
 ## Rust Source RPMs and Vendored Sources
 

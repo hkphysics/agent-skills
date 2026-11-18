@@ -13,10 +13,11 @@ Update an existing Mageia package to a newer upstream version.
 * All checkouts and builds live under a single parent directory named
   `mgarepo`. See "Build location" below.
 * Do not change the `sha1.lst` hash file. Leave it untouched even though the `SOURCES/` files no longer match it; a later manual `mgarepo sync` updates it. Do not worry about the mismatch between `SOURCES/` and `sha1.lst` — `bm`/`rpmbuild` do not read `sha1.lst` during builds. (The original instructions wrote `sha1.list`; the actual file is `sha1.lst`.)
-* Do not include `-Wl,--allow-shlib-undefined` in LDFLAGS. Use version-independent linking via `%{python3_version}` instead (see step 13).
+* Do not include `-Wl,--allow-shlib-undefined` in LDFLAGS. Use version-independent linking via `%{python3_version}` instead (see step 14).
 * The log files may be in another language such as Chinese.
 * **Use macros instead of hardcoded strings.** In the spec, any string that varies from version to version — URLs, package names, version numbers, build tags, archive/file names — must be written with macros (`%{version}`, `%{name}`, `%{url}`, `%{built_tag}`, etc.) rather than the literal value. Bump `Version:` and let the macros expand; do not paste `foo-1.2.3` or `.../foo-1.2.3.tar.gz` into `Source:` lines. See "Spec macros" below.
-* **Never hardcode `/usr/lib64` or `/usr/lib`** — use the `%{_libdir}` macro instead (e.g. `/usr/lib64` on x86_64, `/usr/lib` on ARM). This applies to every path you write into a spec, including `%files` entries for debug info (e.g. `/usr/lib/debug/%{_libdir}/lib%{name}.so.*.debug` rather than a hardcoded `/usr/lib64` prefix). Avoid hardcoding any part of a filename when a macro is available; use `%{name}`, `%{version}`, etc.
+* **Never hardcode `/usr/lib64` or `/usr/lib`** — use the `%{_libdir}` macro instead (e.g. `/usr/lib64` on x86_64, `/usr/lib` on ARM). Avoid hardcoding any part of a filename when a macro is available; use `%{name}`, `%{version}`, etc.
+* **Do not list `.debug` files in `%files`.** Debug info is automatically extracted and packaged by `find-debuginfo` into the `-debuginfo` (or `-debugsource`) subpackage. Manually listing a `.debug` path duplicates the file into both the main and the debuginfo package, and breaks on architectures whose `%{_libdir}` differs from x86_64 (e.g. ARM uses `/usr/lib`, not `/usr/lib64`) with a `File not found` error. Never add entries like `/usr/lib/debug/%{_libdir}/lib%{name}.so.*.debug` to `%files`; let the debuginfo machinery handle it.
 
 ## Build location
 
@@ -104,21 +105,38 @@ If it appears that the instruction has already been performed then skip to the n
 9. **Fix dependency errors**:
    If there are errors with missing dependencies, instruct the user to install them by running `urpmi` against the spec file. If the user responds with an error log due to broken dependencies, fix up the dependencies.
 
-10. **Fix errors due to patches**. If the build fails because an old patch no longer applies:
+10. **Audit CMake dependencies against `BuildRequires:`** (mandatory for CMake-based packages, before the test build)
+   A successful local build proves nothing: CMake's `find_*` calls will happily locate libraries that happen to be installed on this machine but are not declared in the spec. The build then succeeds here and breaks on clean buildroots (mock, build daemons) or on remote machines. Verify coverage by reading the CMake files, not by observing that the build worked.
+   - In the unpacked source (`BUILD/<package>-<version>` after `bm -r`, or the pristine tarball), list every dependency probe:
+     ```bash
+     grep -rniE 'find_package[[:space:]]*\(|pkg_check_modules|pkg_search_module|find_library|find_path|find_program|FetchContent_Declare|ExternalProject_Add' \
+       --include=CMakeLists.txt --include='*.cmake' .
+     ```
+   - For each probe, find the Mageia package that provides it:
+     ```bash
+     urpmq --what-provides pkgconfig(foo)   # preferred
+     urpmq --what-provides 'cmake(Foo)'     # some CMake config files are provided under cmake(Foo) tags
+     ```
+   - Every dependency that is probed and used by the build must have a matching `BuildRequires:` line in the spec (prefer `pkgconfig(...)` tags per the Build Requires section). For `find_package(Foo COMPONENTS A B)`, each required component needs its own `BuildRequires:`.
+   - Optional probes (a `find_package` without `REQUIRED`, or `find_library` used under `if(...)`) must not be silently picked up from the build host: either add the `BuildRequires:` and let the feature be enabled, or disable the auto-detection explicitly (e.g. `-DFOO_ENABLED=OFF` / `-DWITH_FOO=OFF` passed to cmake in `%build`) so the package behaves identically on every machine. Never let whether the dependency is used depend on what happens to be installed locally.
+   - Watch for `FetchContent_Declare` / `ExternalProject_Add` / "if(NOT FOO_FOUND) ... use bundled copy" fallbacks: these silently download or build a bundled copy when the system library is missing. Replace the fallback with a hard requirement — add the `BuildRequires:` and make the probe mandatory (or remove/disable the bundled fallback) so the build fails loudly instead of diverging between machines.
+   - Add the missing `BuildRequires:` lines, then re-check: every `find_package`/`pkg_check_modules`/`find_library` hit from the grep above must trace to a `BuildRequires:` line in the spec. Only then proceed to the test build. If `bm` still succeeds locally, that is not evidence — the grep-to-spec cross-check is.
+
+11. **Fix errors due to patches**. If the build fails because an old patch no longer applies:
    - Inspect the patch (`Patch01`, etc.) in `SPECS/` or `SOURCES/`.
    - Keep Mageia-related patches and modify them so they apply against the new code (refresh with `diff -u` against the new sources, update context lines, or rebase hunks).
    - Drop a patch only if the fix it provides has already been incorporated upstream in the new version (verify against the upstream source or release notes).
    - Remove or update `Patch:` lines and `%patch` macros accordingly.
    - Re-run `spectool -g` and `bm` until it succeeds.
 
-11. **Do a test build**
+12. **Do a test build**
    - Once the build requires are satisfied, do a test build with:
      ```bash
      bm SPECS/<package>.spec
      ```
-12. **Verify that the build has produced RPMS/SRPMS**
+13. **Verify that the build has produced RPMS/SRPMS**
 
-13. **Fix compile issues**
+14. **Fix compile issues**
     - If there are any compile issues, create a new patch to fix those issues or modify build instructions in the spec.
     - For Python packages that build C/Cython extensions with the Mavenia hardened `-Wl,--no-undefined` linker flag, add an LDFLAGS export in the spec's `%build` section to link against the Python shared library, so the build does not fail with undefined references to Python C API symbols (e.g. `_Py_NoneStruct`, `PyUnicode_FromString`). A version-independent form is:
       ```spec
@@ -126,11 +144,11 @@ If it appears that the instruction has already been performed then skip to the n
       ```
       (Place before the Python build macro such as `%pyproject_wheel`.)
 
-14. **Look at the Fedora repo** for recent patches to apply:
+15. **Look at the Fedora repo** for recent patches to apply:
     - Check the Fedora dist-git package page (`https://src.fedoraproject.org/rpms/<package>`) for newer patch files and spec changes.
     - Download any relevant patches into `SOURCES/` and add `Patch:` lines plus `%patch` macros to the spec.
 
-15.  **Fix changes to files**
+16.  **Fix changes to files**
      - If the build fails because of unpackaged files or missing files
        fix the rpm files list to take this into account
 
@@ -170,8 +188,9 @@ Keep spec lines version-independent so a version bump touches only `Version:`:
 - Make sure that the BuildRequires is architecture independent (i.e. do not include `lib64<package>`).
 - Use `bm` rather than `rpmbuild` for rpm/srpm builds. Never run `rpmbuild` directly (see the build rule above): it uses `~/rpmbuild` instead of the package tree.
 - If the spec file contains a `%generate_buildrequires` section (for example one driven by `%pyproject_buildrequires`), the BuildRequires generated by that macro must be inserted into the spec file as explicit `BuildRequires:` lines. Mageia's `urpmi` cannot install dynamically generated build requires, so they have to be written into the spec file explicitly.
-- Before a test build, make sure the spec's `BuildRequires:` covers every dependency required by the package's build system: all libraries probed via `./configure` (pkg-config checks, `AC_SEARCH_LIBS`, header checks) and any CMake `find_package` / pkg-config probes must have a matching `BuildRequires:` line. Missing entries are satisfied only by packages already present on the build machine, so the build can succeed there while clean build roots (mock, build daemons) fail or the resulting RPM will not install cleanly — add the missing `BuildRequires:` entries before building.
+- Before a test build, make sure the spec's `BuildRequires:` covers every dependency required by the package's build system: all libraries probed via `./configure` (pkg-config checks, `AC_SEARCH_LIBS`, header checks) and any CMake `find_package` / pkg-config probes must have a matching `BuildRequires:` line. Missing entries are satisfied only by packages already present on the build machine, so the build can succeed there while clean build roots (mock, build daemons) fail or the resulting RPM will not install cleanly — add the missing `BuildRequires:` entries before building. For CMake-based packages this is a mandatory, explicit audit (see workflow step 10): grep the unpacked source for `find_package` / `pkg_check_modules` / `find_library` / `FetchContent_Declare` and trace every hit to a `BuildRequires:` line. Local build success is not evidence of coverage.
 - **Ensure all necessary dependencies are listed.** The spec must contain a `BuildRequires:` entry for every dependency the build actually needs. After any build failure or when a new upstream version introduces new dependencies, inspect `SPECS/log.<package>` (or the build log) and add the missing `BuildRequires:` lines before declaring the package updated.
+- **Remove BuildRequires that are unused or already included via another BuildRequires.** A BuildRequires that no part of the build consumes is dead weight and must be removed: no `dependency()`/`pkg_check_modules`/`find_package`/`find_library` probe in the build files (meson.build, CMakeLists.txt, *.pc probing in build scripts, autotools configure.ac), no `.pc` reference from kept entries' Requires, no use in `%build`/`%install`/`%check`, and no `%cmake`/`%meson` fallback that needs it. A BuildRequires whose provider package is already guaranteed to be installed by another kept BuildRequires is redundant and must be removed — e.g. `pkgconfig(gio-2.0)`, `pkgconfig(gio-unix-2.0)` and `pkgconfig(girepository-2.0)` all ship in libglib2.0-devel (kept via `pkgconfig(glib-2.0)`); all muffin `pkgconfig(muffin-*)` files ship in libmuffin-devel (kept via `pkgconfig(libmuffin-0)`); gtk+-3.0-devel Requires atk-bridge-2.0, cairo-xlib, x11, xcomposite, xext and xfixes, so those come with `pkgconfig(gtk+-3.0)`. Verify with `urpmf <file-or-.pc>` and `rpm -qR <provider-devel>` (or `rpm -q --requires <provider-devel>`), never by assumption, and only via hard `Requires:` — not `Recommends:`/`Suggests:`. Do not remove a BuildRequires that supplies something the build needs but no kept BuildRequires guarantees (e.g. `gobject-introspection` provides g-ir-scanner, required by `gnome.generate_gir`, and is not pulled in by lib64girepository-devel in current cauldron — keep it even though it has no `.pc` probe). When in doubt, keep the entry. After pruning, rebuild with `bm` to confirm the spec still builds.
 
 ## Usage
 

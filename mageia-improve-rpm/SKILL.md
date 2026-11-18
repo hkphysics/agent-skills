@@ -41,12 +41,22 @@ Everything lives under a single parent directory named `mgarepo`:
 
 ### BuildRequires conversion
 - When creating or editing `BuildRequires:` lines, prefer `pkgconfig(<package>)` tags over `<package>-devel`.  
-- **Any `*-devel` suffix in a BuildRequires entry must be converted to `devel(*)`.** For example:
-  - `BuildRequires: <foo>-dev` → `BuildRequires: pkgconfig(<foo>)`
-  - `BuildRequires: <foo>-devel` → `BuildRequires: devel(<foo>)` or simply `pkgconfig(<foo>)` as appropriate.
-- Each `BuildRequires:` should be on a single line.
+- **Convert `*-devel` suffix in a BuildRequires entry should to
+  pkgconfig() or develop() style tags with the appropriate package name
+  - Each `BuildRequires:` should be on a single line.
 - Make sure the BuildRequires is architecture independent (i.e. do not include `lib64<package>`).
 - Before a test build, make sure the spec's `BuildRequires:` covers every dependency required by the package's build system: all libraries probed via `./configure` (pkg-config checks, `AC_SEARCH_LIBS`, header checks) and any CMake `find_package` / pkg-config probes must have a matching `BuildRequires:` line. Missing entries are satisfied only by packages already present on the build machine.
+
+### BuildRequires pruning
+- **Remove BuildRequires that are unused or already included via another BuildRequires.** A BuildRequires that no part of the build consumes is dead weight and must be removed: no `dependency()`/`pkg_check_modules`/`find_package`/`find_library` probe in the build files (meson.build, CMakeLists.txt, *.pc probing in build scripts, autotools configure.ac), no `.pc` reference from kept entries' Requires, no use in `%build`/`%install`/`%check`, and no `%cmake`/`%meson` fallback that needs it. A BuildRequires whose provider package is already guaranteed to be installed by another kept BuildRequires is redundant and must be removed — e.g. `pkgconfig(gio-2.0)`, `pkgconfig(gio-unix-2.0)` and `pkgconfig(girepository-2.0)` all ship in libglib2.0-devel (kept via `pkgconfig(glib-2.0)`); all muffin `pkgconfig(muffin-*)` files ship in libmuffin-devel (kept via `pkgconfig(libmuffin-0)`); gtk+-3.0-devel Requires atk-bridge-2.0, cairo-xlib, x11, xcomposite, xext and xfixes, so those come with `pkgconfig(gtk+-3.0)`. Verify with `urpmf <file-or-.pc>` and `rpm -qR <provider-devel>` (or `rpm -q --requires <provider-devel>`), never by assumption, and only via hard `Requires:` — not `Recommends:`/`Suggests:`. Do not remove a BuildRequires that supplies something the build needs but no kept BuildRequires guarantees (e.g. `gobject-introspection` provides g-ir-scanner, required by `gnome.generate_gir`, and is not pulled in by lib64girepository-devel in current cauldron — keep it even though it has no `.pc` probe). When in doubt, keep the entry. After pruning, rebuild with `bm` to confirm the spec still builds.
+
+### Python dependency tags
+- Prefer `python3dist(<dist-name>)` over `python3-<package>` in `BuildRequires:` (and in explicit `Requires:`) for Python library dependencies, e.g. `BuildRequires: python3dist(requests)` instead of `BuildRequires: python3-requests`.
+  - Mageia's `python3-rpm-generators` auto-generates `python3dist(<distname>)` provides from the upstream dist name (PEP 503-normalized), so the tag resolves regardless of what the providing RPM is actually named (`python3-foo`, `python-foo`, bundled subpackages, etc.).
+  - Dist name, not import name and not RPM name: use `python3dist(pyyaml)`, not `python3dist(yaml)` and not `python3-pyyaml`.
+  - This matches Mageia policy ("Automatically-generated dependencies take the form python3dist(modname)") and Fedora's Python packaging guidelines, which Mageia follows.
+- Do NOT convert non-library Python packages to `python3dist()`: keep `python3-devel`, `python3-rpm-macros`, the interpreter (`python3`), and tools like `python3-pytest`/`python3-setuptools` when the spec needs those specific RPMs. When in doubt, check what the RPM actually provides (`rpm -q --provides python3-foo`) before converting.
+- Explicit `Requires:` on Python modules in `%files` packages are usually redundant — rpmbuild auto-generates them as `python3dist()`. But do not drop them blindly: build first, then check `rpm -qRp <built.rpm> | grep python3dist`. Drop only the ones that appear; some packages (e.g. cinnamon, whose Python is driven from JS/C) get none from the generators and must keep the explicit tags.
 
 ### Python checks
 - For Python packages, add a `%check` section (or
@@ -72,10 +82,50 @@ Keep spec lines version-independent so a version bump touches only `Version:`:
 - When a pre-existing spec already uses macros, keep that style; do not introduce new hardcoded copies of the same value.
 - Hardcoding is acceptable only for values that never track the upstream version (e.g. `Epoch:`), or when no suitable macro exists yet — in which case define one.
 
+## Spec Section Guidelines
+
+- **Use standard macros over hardcoded paths:** Reference `%{buildroot}`, `%{_bindir}`, `%{_sysconfdir}`, `%{_mandir}`, and `%{_unitdir}` so packages stay portable across architectures and RHEL releases.
+- **Prefer %global over %define:** Use `%global` for spec-level macros so they evaluate consistently rather than re-evaluating lazily in nested contexts.
+- **Keep sections focused:**
+  - `%prep`: Unpack sources and apply patches.
+  - `%build`: Compile or prepare artifacts (use language build macros like `%py3_build` or `%make_build`).
+  - `%install`: Stage files strictly under `%{buildroot}`.
+  - `%check`: Run unit or smoke tests during the build when possible.
+  - `%files`: Explicitly list owned files and directories, marking config files with `%config(noreplace)` and docs with `%doc` so upgrades do not clobber local changes.
+
+## Spec File Macros & Sections
+
+- Use %autosetup instead of %setup: Unpacks sources and applies declared patches automatically in %prep.
+- Use %{buildroot} instead of $RPM_BUILD_ROOT: Keeps variable syntax consistent across the spec file.
+- Use standard directory macros: Prefer %{_bindir}, %{_libdir}, %{_datadir}, %{_sysconfdir}, and %{_unitdir} instead of /usr/bin or /etc.
+- Use %make_build and %make_install: Replaces manual make %{?_smp_mflags} and make install DESTDIR=%{buildroot} commands.
+- Omit %clean and rm -rf %{buildroot} in %install: Modern RPM handles buildroot cleanup automatically.
+- Use Requires(pre) / Requires(post): Explicitly declare dependencies needed only during specific scriptlet phases.
+- Use %systemd_post, %systemd_preun, and %systemd_postun_with_restart: Standardize service management rather than calling systemctl directly.
+- Use %ldconfig_scriptlets or automatic triggers: Avoid manual /sbin/ldconfig calls in %post and %postun on modern distributions.
+- Use Recommends: and Suggests: (Weak Dependencies): Prefer weak dependencies for optional add-ons instead of forcing hard Requires:.
+
+## Security & Build Flags
+
+- Use %set_build_flags (or default %build flags): Ensures compiler hardening flags (CFLAGS, CXXFLAGS, LDFLAGS) are properly exported.
+- Avoid AutoReqProv: no: Let RPM's automatic dependency generator track shared libraries and interpreters unless fixing a specific packaging bug.
+- Use %license instead of %doc for license files: Installs license files into the dedicated licensedir for compliance tracking.
+
+## Quick Comparison: Modern vs. Legacy
+
+| Packaging Task    | Preferred (Modern)    | Avoid (Legacy) |
+|-------------------|------------------------|----------------|
+| Unpacking & Patching    | %autosetup -p1    | %setup -q + %patch0 -p1 |
+| Compiling    | %make_build    | make %{?_smp_mflags} |
+| Installing    | %make_install    | make install DESTDIR=$RPM_BUILD_ROOT |
+| License Files    | %license LICENSE    | %doc LICENSE |
+| System Paths    | %{_bindir}/app    | /usr/bin/app |
+
 ## Workflow
 - First checkout and build the rpm packages without changes
 - Apply the improvements in this skill
 - Build it again to see if it builds and fix errors
+- Run `rpmlint <package>.spec` against the spec and address any problems found (warnings, errors).
 - If a newer version is used, search for security advisories (CVE, vendor advisories, Mageia security tracker) and include any relevant patches for security issues.
 
 ## Usage
