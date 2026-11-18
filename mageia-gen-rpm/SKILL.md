@@ -68,7 +68,8 @@ python mageia_rpm_gen.py --srpm pkg.src.rpm -g Applications/Graphics
 
 ## Libraries
 1. When converting to mageia specs make sure that the SRPM uses mageia
-   libraries
+   libraries.
+2. **Never hardcode library directory paths** such as `/usr/lib64` or `/usr/lib` — use the `%{_libdir}` macro (e.g. `/usr/lib64` on x86_64, `/usr/lib` on ARM). The same applies to any other filename component: build tags, archive names, package names, URLs, etc. Write them with macros (`%{version}`, `%{name}`, `%{url}`, `%{built_tag}`, `%{shortcommit}`) rather than literal values — see "Mageia Library Conventions" above and "Spec macros" below.
 
 ## Rust Source RPMs and Vendored Sources
 

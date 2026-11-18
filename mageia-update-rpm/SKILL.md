@@ -16,6 +16,7 @@ Update an existing Mageia package to a newer upstream version.
 * Do not include `-Wl,--allow-shlib-undefined` in LDFLAGS. Use version-independent linking via `%{python3_version}` instead (see step 13).
 * The log files may be in another language such as Chinese.
 * **Use macros instead of hardcoded strings.** In the spec, any string that varies from version to version — URLs, package names, version numbers, build tags, archive/file names — must be written with macros (`%{version}`, `%{name}`, `%{url}`, `%{built_tag}`, etc.) rather than the literal value. Bump `Version:` and let the macros expand; do not paste `foo-1.2.3` or `.../foo-1.2.3.tar.gz` into `Source:` lines. See "Spec macros" below.
+* **Never hardcode `/usr/lib64` or `/usr/lib`** — use the `%{_libdir}` macro instead (e.g. `/usr/lib64` on x86_64, `/usr/lib` on ARM). This applies to every path you write into a spec, including `%files` entries for debug info (e.g. `/usr/lib/debug/%{_libdir}/lib%{name}.so.*.debug` rather than a hardcoded `/usr/lib64` prefix). Avoid hardcoding any part of a filename when a macro is available; use `%{name}`, `%{version}`, etc.
 
 ## Build location
 
