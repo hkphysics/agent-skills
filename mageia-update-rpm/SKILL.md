@@ -152,7 +152,59 @@ If it appears that the instruction has already been performed then skip to the n
      - If the build fails because of unpackaged files or missing files
        fix the rpm files list to take this into account
 
-## Updating a list of packages
+## Updating a list of packages — Batch Pipeline Method
+
+When asked to update a list of packages (rpms), use a **batch pipeline** to maximize throughput.
+
+### Pipeline Overview
+
+```
+Discovery → User Deps → Build → Next Batch
+```
+
+1. **Discovery (batch of 10–20 packages)**
+   - For each package in the batch, run `mgarepo co <package>` from inside the `mgarepo` parent directory.
+   - Bump `Version:` in `SPECS/<package>.spec`.
+   - Download sources with `spectool -g SPECS/<package>.spec`, then move any downloaded tarballs/files into `SOURCES/`.
+   - Run the prep stage only: `bm -l -p SPECS/<package>.spec`
+   - **Record which dependencies are missing** (from the bm log in `SPECS/log.<package>` or from the prep step's `BuildRequires` failures).
+   - **Do not build yet** — the goal is fast discovery of dependency gaps across the whole batch.
+
+2. **Dependency install (user action)**
+   - Report the missing `BuildRequires:` per package to the user and ask them to install the packages with `urpmi`.
+   - Do **not** use `sudo urpmi ...` yourself — ask the user to install them.
+   - Map each `python3dist()` tag or pkg-config tag to the actual Mageia package name with `urpmq --what-provides <tag>` so the user gets the right package to install.
+
+3. **Build pass (same batch)**
+   - After the user reports the deps installed, re-run each package with `bm -l SPECS/<package>.spec`.
+   - If a build-only problem appears, fix the spec and retry. Packages are not done until the full build succeeds and RPMs are produced.
+
+4. **Next batch**
+   - While the user installs deps for batch N, run discovery for batch N+1.
+   - This overlap keeps throughput high.
+
+5. **Ordering / skipping rules**
+   - If a package cannot be checked out (missing from repo), skip it.
+   - If prep fails for reasons unrelated to deps (upstream patch breakage, source 404, upstream code bug), note it and skip it — don’t block the batch.
+   - If a build fails only because a missing dep wasn’t actually provided by the installed RPM (wrong `Provides` version — e.g. `python3dist(mypy) = 1.15` vs spec’s `>= 2`), skip it and point out which dep must be rebuilt.
+
+### Batch Report Format
+
+After each batch, post a compact report like:
+
+```
+## Batch N Report
+✅ Built: pkg-a 1.2.3, pkg-b 0.4.0
+🔧 Needs deps: pkg-c (urpmi python3-xyz), pkg-d (urpmi lib64abc-devel)
+❌ Skip: pkg-e (source 404), pkg-f (upstream patch broken)
+📂 Next batch: pkg-g, pkg-h, ...
+```
+
+### Batch Size
+
+Each batch should be about **10–20 packages**. Smaller batches waste time; larger batches make dependency-discovery reports unwieldy and risk letting too many slices sit idle.
+
+## Updating a list of packages (legacy single-pass mode)
 
 When asked to update a list of packages (rpms), process them one at a time, in this order:
 
@@ -170,6 +222,16 @@ When asked to update a list of packages (rpms), process them one at a time, in t
 5. **Build every package that passed prep with `bm SPECS/<package>.spec`** and report success or failure per package. **Note: a package is not fully updated until it has been built with the new version.**
 
 The skill will attempt to build all packages it can, skipping only those with missing build dependencies.
+
+### Batch Pipeline Example (real-world)
+
+Batch 1 discovery (10 packages):
+1. All python packages prepped fine.
+2. Build failures revealed: `python3dist(setuptools-scm)` unsatisfied, `python3dist(flit-core)` missing for some, etc.
+3. User ran `urpmi` for the listed Mageia packages.
+4. Re-build pass produced 7 successful RPMs; 2 failed only due to wrong Provides metadata in dep RPMs, 1 needed its %check disabled.
+
+This method catches all missing deps in one sweep instead of one at a time while each package builds.
 
 ## Spec macros
 
