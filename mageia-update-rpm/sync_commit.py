@@ -85,6 +85,15 @@ def _mgarepo_sync(pkg_dir):
     return True, stdout
 
 
+def _mgarepo_submit(pkg_dir):
+    """Run mgarepo submit in the package directory."""
+    print(f"  Running: mgarepo submit", file=sys.stderr)
+    stdout, stderr, rc = _run_cmd("mgarepo submit", cwd=pkg_dir)
+    if rc != 0:
+        return False, f"mgarepo submit failed (rc={rc}): {stderr}"
+    return True, stdout
+
+
 def _mgarepo_commit(pkg_dir, message):
     """Run mgarepo ci with the given message in the package directory."""
     print(f"  Running: mgarepo ci -m '{message}'", file=sys.stderr)
@@ -93,6 +102,71 @@ def _mgarepo_commit(pkg_dir, message):
     if rc != 0:
         return False, f"mgarepo ci failed (rc={rc}): {stderr}"
     return True, stdout
+
+
+def _is_already_submitted(pkg_name):
+    """Check if package is already submitted/built on pkgsubmit.mageia.org.
+    Returns True if found, False if not found, None if check failed (network error etc)."""
+    url = f"https://pkgsubmit.mageia.org/?q={pkg_name}"
+    try:
+        stdout, stderr, rc = _run_cmd(f"curl -sL --max-time 10 '{url}'")
+        if rc == 0:
+            # If the package name appears as a submitted package link, it is already submitted
+            # Package links look like: class="package">conmon-2.2.1-1.mga11
+            import re
+            pkg_links = re.findall(r'class="package">[^<]+', stdout)
+            for link in pkg_links:
+                # Check if link starts with pkg_name- (package name prefix before version)
+                cleaned = link.replace('class="package">', '')
+                if cleaned.startswith(pkg_name + '-'):
+                    return True
+            return False
+        return False
+    except Exception:
+        return None
+
+
+def _offer_submit(pkg_dir, pkg_name, version, release, commit_msg):
+    """Ask the user whether to run mgarepo submit. Returns the result dict."""
+    # Check if package is already available on pkgsubmit.mageia.org
+    already = _is_already_submitted(pkg_name)
+    if already is True:
+        print(f"  {pkg_name} {version}-{release} already appears submitted on pkgsubmit.mageia.org — skipping submit.")
+        return {
+            "package": pkg_name,
+            "status": "submitted",
+            "version": version,
+            "release": release,
+            "commit_message": commit_msg,
+            "submitted": True,
+            "already_submitted": True,
+        }
+    elif already is None:
+        print(f"  Could not check pkgsubmit.mageia.org (network error) — proceeding to prompt.")
+
+    try:
+        submit_response = input(f"\nRun mgarepo submit for {pkg_name} {version}-{release} now? [y/N/q]: ").strip().lower()
+    except EOFError:
+        submit_response = 'n'
+
+    submitted = False
+    if submit_response in ('y', 'yes'):
+        ok, out = _mgarepo_submit(pkg_dir)
+        if not ok:
+            return {"package": pkg_name, "status": "error", "error": out, "version": version, "release": release, "commit_message": commit_msg}
+        print(f"  mgarepo submit: OK")
+        submitted = True
+    elif submit_response in ('q', 'quit'):
+        return {"package": pkg_name, "status": "quit"}
+
+    return {
+        "package": pkg_name,
+        "status": "submitted" if submitted else "committed",
+        "version": version,
+        "release": release,
+        "commit_message": commit_msg,
+        "submitted": submitted
+    }
 
 
 def process_package(pkg_name, mgarepo_root):
@@ -127,6 +201,12 @@ def process_package(pkg_name, mgarepo_root):
     print(f"\n--- svn diff ---")
     print(diff)
 
+    # If there are no changes, skip sync/commit and go straight to submit
+    if diff.strip() in ("", "(no changes)"):
+        print(f"\nNo changes for {pkg_name} {version}-{release} — skipping sync and commit.")
+        commit_msg = f"updated to {version}"
+        return _offer_submit(pkg_dir, pkg_name, version, release, commit_msg)
+
     # Prompt user
     while True:
         try:
@@ -147,13 +227,7 @@ def process_package(pkg_name, mgarepo_root):
                 return {"package": pkg_name, "status": "error", "error": out, "version": version, "release": release}
             print(f"  mgarepo ci: OK (message: '{commit_msg}')")
 
-            return {
-                "package": pkg_name,
-                "status": "committed",
-                "version": version,
-                "release": release,
-                "commit_message": commit_msg
-            }
+            return _offer_submit(pkg_dir, pkg_name, version, release, commit_msg)
 
         elif response in ('n', 'no', ''):
             return {
@@ -204,8 +278,17 @@ Examples:
     elif args.packages:
         pkg_names = args.packages
     else:
-        parser.print_help()
-        sys.exit(1)
+        # No explicit packages given: auto-discover packages with built RPMs
+        print("No packages specified. Auto-discovering packages with built RPMs...")
+        pkg_names = []
+        for d in mgarepo_root.iterdir():
+            if d.is_dir() and (d / "SPECS").exists():
+                if _has_built_rpms(d):
+                    pkg_names.append(d.name)
+        if not pkg_names:
+            print("No packages with built RPMs found.")
+            sys.exit(0)
+        print(f"Found {len(pkg_names)} package(s) with built RPMs: {', '.join(pkg_names)}")
 
     print(f"Processing {len(pkg_names)} package(s) from {mgarepo_root}")
     print(f"Mode: {'dry-run' if args.dry_run else 'interactive'}")
@@ -229,6 +312,8 @@ Examples:
         pkg = r.get("package", "?")
         if status == "committed":
             print(f"  ✓ {pkg} {r.get('version')}-{r.get('release')} -> committed")
+        elif status == "submitted":
+            print(f"  ✓ {pkg} {r.get('version')}-{r.get('release')} -> committed (submitted)")
         elif status == "skipped":
             print(f"  ⊘ {pkg} {r.get('version')}-{r.get('release')} -> skipped ({r.get('reason')})")
         elif status == "skip":
@@ -238,7 +323,7 @@ Examples:
         elif status == "quit":
             print(f"  ⏹ {pkg} -> quit requested")
 
-    committed = sum(1 for r in results if r.get("status") == "committed")
+    committed = sum(1 for r in results if r.get("status") in ("committed", "submitted"))
     print(f"\nTotal committed: {committed}/{len(results)}")
 
 

@@ -18,6 +18,7 @@ Update an existing Mageia package to a newer upstream version.
 * **Use macros instead of hardcoded strings.** In the spec, any string that varies from version to version — URLs, package names, version numbers, build tags, archive/file names — must be written with macros (`%{version}`, `%{name}`, `%{url}`, `%{built_tag}`, etc.) rather than the literal value. Bump `Version:` and let the macros expand; do not paste `foo-1.2.3` or `.../foo-1.2.3.tar.gz` into `Source:` lines. See "Spec macros" below.
 * **Never hardcode `/usr/lib64` or `/usr/lib`** — use the `%{_libdir}` macro instead (e.g. `/usr/lib64` on x86_64, `/usr/lib` on ARM). Avoid hardcoding any part of a filename when a macro is available; use `%{name}`, `%{version}`, etc.
 * **Do not list `.debug` files in `%files`.** Debug info is automatically extracted and packaged by `find-debuginfo` into the `-debuginfo` (or `-debugsource`) subpackage. Manually listing a `.debug` path duplicates the file into both the main and the debuginfo package, and breaks on architectures whose `%{_libdir}` differs from x86_64 (e.g. ARM uses `/usr/lib`, not `/usr/lib64`) with a `File not found` error. Never add entries like `/usr/lib/debug/%{_libdir}/lib%{name}.so.*.debug` to `%files`; let the debuginfo machinery handle it.
+* **Do not use bare directories in `%files`.** Never hardcode `/usr/share/pkgconfig/`, `/usr/share/cmake/`, `/usr/share/gtk-doc/`, or any other absolute directory path in the spec. Always use macro-based paths that expand correctly per-architecture and distro: `%{_datadir}/pkgconfig/%{name}.pc`, `%{_datadir}/cmake/%{name}/`, `%{_datadir}/gtk-doc/html/%{name}/`, etc. Bare paths like `/usr/share/pkgconfig/foo.pc` work on x86_64 but break on ARM (where `/usr/lib` is used instead of `/usr/lib64`) and fail `check-files`.
 
 ## Build location
 
@@ -65,7 +66,7 @@ If it appears that the instruction has already been performed then skip to the n
    - If security patches are needed, add `Patch:` lines and `%patch` macros, and adjust `Version:`/`Release:` if needed.
    - Bump `Version:` to the new upstream version.
    - Update `Source0:` (and any other `Source:` lines) to point at the new source file — but write it with macros (`%{version}`, `%{name}`, `%{url}`, `%{built_tag}`) so it tracks `Version:` instead of pasting the new literal string.
-   - If the new version is a versioned release (i.e., not a prerelease), set the release counter to 1; otherwise bump `Release:`.
+   - **When the version is bumped up, reset the release to 1** (`Release: %mkrel 1`); do not keep a stale or incremented release counter.
    - Note: `%mkrel` is a valid Mageia macro (it expands to `<release>.mga11`); use it for the `Release:` tag (e.g. `Release: %mkrel 1`).
 
 4. **For Rust packages, redo the vendor package.**
