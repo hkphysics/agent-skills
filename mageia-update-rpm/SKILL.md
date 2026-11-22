@@ -281,3 +281,33 @@ It does not upload the new RPM to Mageia's build system (koji).
 It does not create a new package from scratch (use `mageia-rpm-gen` for that).
 It does not choose the "correct" version for you; it reports candidate versions found online and applies the one you (or policy) selects.
 It does not delete successful build information - successful RPM builds are preserved, but intermediate build state can be cleaned up after verification.
+
+## Handling Build Failure Categories
+
+The build failure taxonomy maps directly to the four package categories defined under **Package Categorization**:
+
+| Category | Dominant failure types | Response |
+|---|---|---|
+| **Successfully built** | none — build completed, RPM produced | Record result; move on |
+| **All deps installed (ready to build)** | *Missing source / 404*, *Missing build dep*, *Patch fails*, *Unpack error* | Read `SPECS/log.<pkg>` for exact error; fix per table below; re-run full `bm SPECS/<package>.spec`. |
+| **Done & uploaded** | none — already uploaded | Skip; do not re-attempt. |
+| **Not started** | *Any* — package never checked out or attempted | Run `mgarepo co <package>`, bump spec, `spectool`, then `bm -l -p` prep-only test first. |
+
+### Per-failure-type responses
+
+| Failure type | Symptoms | Response |
+|---|---|---|
+| **Missing source / 404** | `Failed to download`, 0-byte tarball, `Cannot read ... No such file` | Clean SOURCES, fix source URL (macros), verify upstream, fetch manually |
+| **Missing build dep** | `BuildRequires: ... is missing`, or `%generate_buildrequires` can't install via urpmi | Do NOT build yet; collect all missing deps, ask user, map tags via `urpmq --what-provides` |
+| **Patch fails to apply** | `1 out of 1 hunk FAILED`, `.rej` files | Inspect upstream; drop patch if fix upstream, else refresh hunk via `diff -u` |
+| **Unpack error** | `cd: <dir>: No such file or directory` | Check tarball name vs `%setup -n`; fix extracted dir name |
+| **Missing / untracked files** | `check-files` finds installed-but-unpackaged files | Fix `%files` section; do NOT add debug files |
+| **BuildRequires provides mismatch** | Build runs locally but dep version wrong | Skip; point out which dep needs rebuilding |
+| **Source version unavailable** | GitHub tags/API 404, PyPI missing version | Skip; note upstream availability |
+| **Build env / env-var** | LDFLAGS mismatch, offline vendor failure | Adjust spec env/vars (macro), not source |
+
+**General response rules:**
+- Batch skip (source 404 / broken patch / unavailable version) → skip, don't block batch
+- Batch build fails → collect missing deps for remaining packages before asking user
+- Never block batch on a single package; record failure type and move on
+- After fix, re-run `bm` full build (not just prep) and read log
