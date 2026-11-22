@@ -6,8 +6,9 @@ Buildrequires come in two kinds:
   * implicit  — capabilities emitted at build time by
                 %generate_buildrequires / %pyproject_buildrequires. These are
                 turned into an RPM capability requirement, preferring a
-                pkgconfig(...) form (e.g. pkgconfig(udev)) or a
-                python3dist(...) form (e.g. python3dist(cloudpickle)).
+                pkgconfig(...) form (e.g. pkgconfig(udev)), a
+                python3dist(...) form (e.g. python3dist(cloudpickle)),
+                or a crate(...) form (e.g. crate(foo)) for Rust crates.
 
 For each buildrequire the script asks the local rpm database whether something
 already provides it. Satisfied deps are skipped; the rest are accumulated and
@@ -40,7 +41,7 @@ from collections.abc import Iterable
 from glob import glob
 
 # Capabilities emitted by %generate_buildrequires via pyproject/rpm-macros.
-DYN_RE = re.compile(r"(python3dist|python3-|perl|cmake|pkgconfig)\(([^)]+)\)")
+DYN_RE = re.compile(r"(python3dist|python3-|perl|cmake|pkgconfig|crate)\(([^)]+)\)")
 # A buildrequire line: "BuildRequires: name, version" (one logical line may
 # list several comma-separated capabilities).
 BUILDREQUIRE_RE = re.compile(r"^BuildRequires:\s*(.+)$")
@@ -150,12 +151,8 @@ def convert_implicit(out: str) -> list[str]:
     """
     deps: list[str] = []
     for line in out.splitlines():
-        for _, cap in DYN_RE.findall(line):
-            base, arg = cap, ""
-            if "(" in cap and cap.endswith(")"):
-                base, arg = cap.split("(", 1)
-                arg = arg[:-1]
-            normalized = _normalize_implicit(f"{base}({arg})")
+        for prefix, cap in DYN_RE.findall(line):
+            normalized = _normalize_implicit(f"{prefix}({cap})")
             if normalized:
                 deps.append(normalized)
     return deps
@@ -188,6 +185,9 @@ def _normalize_explicit(dep: str) -> str:
 
     if dep.startswith("python3dist(") and dep.endswith(")"):
         return f"python3-{dep[len('python3dist('):-1]}"
+
+    if dep.startswith("crate(") and dep.endswith(")"):
+        return dep
 
     if dep.startswith(("perl(", "pkgconfig64(", "xlib(")):
         return dep
@@ -225,6 +225,9 @@ def _normalize_implicit(dep: str) -> str:
 
     if dep.startswith("python3dist(") and dep.endswith(")"):
         return f"python3-{dep[len('python3dist('):-1]}"
+
+    if dep.startswith("crate(") and dep.endswith(")"):
+        return dep
 
     if dep.startswith(("perl(", "pkgconfig64(", "xlib(")):
         return dep
@@ -315,18 +318,36 @@ def main() -> int:
         path = os.path.join(start, name)
         spec = next(iter(glob(os.path.join(path, "SPECS", "*.spec"))))
         explicit = parse_explicit(spec)
-        work = tempfile.mkdtemp()
-        try:
-            proc = subprocess.run(
-                ["rpmbuild", "-br", "--define", f"_topdir {path}", spec],
+        # Resolve the real buildrequires by running `bm -r`: bm builds inside the
+        # package tree and, after %prep + %generate_buildrequires, assembles the
+        # source package (and exits 11 when a dynamic dep is still missing).
+        proc = subprocess.run(
+            ["bm", "-r", "--move-srpm", ".", spec],
+            capture_output=True, text=True, cwd=path,
+            env={**os.environ, "RPMTOPDIR": tempfile.mkdtemp()},
+        )
+        # bm writes the built SRPM into the package dir (SPECS/ is not where
+        # RPMS/ lands); read its fully-resolved BuildRequires instead of the
+        # spec's raw lines or the noisy build log. The SRPM is created either
+        # way (unless %generate_buildrequires is entirely absent), even on exit
+        # 11, so it is the ground truth for what the build actually needs.
+        srpm = (
+            glob(os.path.join(path, f"{os.path.splitext(os.path.basename(spec))[0]}-*.src.rpm"))
+            or glob(os.path.join(path, "*buildreqs.nosrc.rpm"))
+        )
+        srpm = srpm[0] if srpm else None
+        implicit = []
+        if srpm:
+            res = subprocess.run(
+                ["rpm", "-q", "--whatrequires", "-p", srpm, "BuildRequires"],
                 capture_output=True, text=True,
-                env={**os.environ, "RPMTOPDIR": work},
             )
-        finally:
-            subprocess.run(["rm", "-rf", work], check=False)
-        implicit = convert_implicit(proc.stdout + proc.stderr)
+            if res.returncode == 0:
+                implicit = convert_implicit(res.stdout)
+            subprocess.run(["rm", "-f", srpm], check=False)
 
-        # Union per-package: keep explicit verbatim, implicit macro-expanded
+        # Union per-package: keep explicit verbatim, macro-expanded implicit
+        # from the built SRPM's resolved BuildRequires.
         pkg_entries = explicit + implicit
         if not pkg_entries:
             empty_pkgs += 1
