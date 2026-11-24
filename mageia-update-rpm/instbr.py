@@ -1,5 +1,12 @@
 #!/usr/bin/env python3
-"""instbr.py — Resolve EVERY buildrequire of Mageia packages, then install them.
+"""instbr.py — Resolve buildrequires for Mageia packages and install them.
+
+Each package is processed one at a time: explicit BuildRequires are read from
+the spec, implicit ones are captured from the generated SRPM (via bm -r), the
+package's deps are deduped, checked against the installed rpm database, and
+the unresolved ones are installed with sudo urpmi immediately — before moving
+on to the next package. This way the script finds and installs deps as it goes
+rather than deferring everything to a final batch.
 
 Buildrequires come in two kinds:
   * explicit  — the static BuildRequires: lines in the spec. Kept as-is.
@@ -47,12 +54,28 @@ DYN_RE = re.compile(r"(python3dist|python3-|perl|cmake|pkgconfig|crate)\(([^)]+)
 BUILDREQUIRE_RE = re.compile(r"^BuildRequires:\s*(.+)$")
 # Strip a version constraint, e.g. "pkg >= 1" -> "pkg".
 VERSION_RE = re.compile(r"\s*(>=|<=|==|>|<)[^ ]*$")
-# A require name: a capability like pkgconfig(name)/perl(name) or a bare
-# package name. Used to pull names out of a BuildRequires line so a trailing
-# version constraint is dropped, not split into its own junk token.
-# The pkgconfig(name) alternation matches the whole parenthesised form even
-# when a version sits inside, e.g. "pkgconfig(libicu-devel) >= 68", while the
-# bare-name alternation still matches names that end in a symbol (gcc-c++).
+# The capability emitted by %generate_buildrequires, with an optional
+# version that may sit inside the parens (pkgconfig(libicu) >= 1.0), after it
+# (pkgconfig(libicu) 1.0), or both. The parenthesised form matches the whole
+# tag so the version never becomes a stray token; the version-only tail is
+# dropped (e.g. the "1.0" in pkgconfig(libicu) >= 1.0).
+CAPABILITY_RE = re.compile(
+    r"(python3dist|python3-|perl|cmake|pkgconfig|pkgconfig64|xlib|crate)"
+    r"\(([^)]+)\)\s*(?:>=|<=|==|>|<)?\s*[\d][\d.]*"
+)
+# The capability emitted by %generate_buildrequires, with an optional bare
+# version that follows it with no operator, e.g. "rust >= 1.85" or
+# "crate(chrono/default) 0.10.0". The bare-name branch keeps names that end in
+# a symbol (gcc-c++) and drops a trailing version, keeping the rest of the
+# tag inside the parens for crate()/pkgconfig(...) forms.
+CAPABILITY2_RE = re.compile(
+    r"(python3dist|python3-|perl|cmake|pkgconfig|pkgconfig64|xlib|crate)"
+    r"\(([^)]+)\)\s*\d(?:[\d.]*)?"
+)
+# Used by _split_part to pull each name out of an explicit BuildRequires part.
+# A capability like pkgconfig(name) >= 1.0 is captured whole (so its version
+# never becomes a stray token), and bare names ending in a symbol (gcc-c++)
+# are kept too.
 NAME_RE = re.compile(
     r"([a-z0-9][a-z0-9.+_-]*\((?:[^)]+?\s*(?:>=|<=|==|>|<)?[\d\w.\s-]+?)\))"
     r"|([a-z0-9][a-z0-9.+_-]*[\d\w.+-]*)"
@@ -142,20 +165,46 @@ def _split_part(part: str) -> list[str]:
 
 def convert_implicit(out: str) -> list[str]:
     """Turn each capability emitted by %generate_buildrequires into an RPM
-    requirement, preferring pkgconfig()/python3dist()/perl(...) forms.
+    requirement.
 
-    Uses _normalize_implicit so that:
-    * python3dist(foo) → python3-foo (macro expanded)
-    * pkgconfig(X-devel) → pkgconfig(X) (strip -devel)
-    * bare names are normalized appropriately.
+    The generated BuildRequires (a crate()/python3dist()/pkgconfig(...)
+    capability, possibly with a version that sits inside or after the parens)
+    is pulled out with CAPABILITY_RE/CAPABILITY2_RE and normalised so the
+    version is dropped and pkgconfig(...) names lose a trailing -devel, giving
+    a bare capability such as crate(chrono/default) or python3-foo that rpm
+    --whatprovides can match. Bare names (e.g. the "rust" in "rust >= 1.85")
+    are skipped, as they come from the spec, not %generate_buildrequires.
     """
     deps: list[str] = []
     for line in out.splitlines():
-        for prefix, cap in DYN_RE.findall(line):
-            normalized = _normalize_implicit(f"{prefix}({cap})")
-            if normalized:
-                deps.append(normalized)
-    return deps
+        for prefix, cap in CAPABILITY_RE.findall(line):
+            deps.append(_normalize_cap(prefix, cap))
+        for prefix, cap in CAPABILITY2_RE.findall(line):
+            deps.append(_normalize_cap(prefix, cap))
+    return [d for d in deps if d]
+
+
+def _normalize_cap(prefix: str, cap: str) -> str:
+    """Normalise one generated capability for install checking.
+
+    Drops the version, strips a trailing -devel from pkgconfig(name), and keeps
+    the capability in its original form (e.g. python3dist(foo) -> python3dist(foo),
+    pkgconfig(foo-devel) -> pkgconfig(foo), crate(chrono/default) -> crate(...)).
+    The result is a capability string that urpmi can use to resolve via the
+    RPM provides database; we do NOT convert python3dist(foo) to a Mageia package
+    name like python3-foo.
+    """
+    cap = cap.strip()
+    if not cap or cap.startswith("/"):
+        return ""
+    if prefix in ("pkgconfig", "pkgconfig64"):
+        name = cap.split()[0]
+        if name.endswith("-devel"):
+            name = name[: -len("-devel")]
+        return f"{prefix}({name})"
+    if prefix == "python3dist":
+        return f"python3dist({cap})"
+    return f"{prefix}({cap})"
 
 
 def _normalize_explicit(dep: str) -> str:
@@ -176,15 +225,13 @@ def _normalize_explicit(dep: str) -> str:
         parts = inner.split(None, 1)
         name = parts[0]
         version = parts[1].strip() if len(parts) > 1 else ""
-        if name.endswith("-devel"):
-            name = name[: -len("-devel")]
         out = f"pkgconfig({name})"
         if version:
             out += f" {version}"
         return out
 
     if dep.startswith("python3dist(") and dep.endswith(")"):
-        return f"python3-{dep[len('python3dist('):-1]}"
+        return dep  # KEEP original capability form
 
     if dep.startswith("crate(") and dep.endswith(")"):
         return dep
@@ -196,13 +243,10 @@ def _normalize_explicit(dep: str) -> str:
 
 
 def _normalize_implicit(dep: str) -> str:
-    """Normalize an implicit (auto-generated) buildrequire.
+    """Keep the original generated capability form without normalization.
 
-    * python3dist(foo) → python3-foo (macro-expanded package name)
-    * pkgconfig(foo-devel) → pkgconfig(foo) (strip -devel for installability)
-    * pkgconfig(foo) → pkgconfig(foo)
-    * perl(...), pkgconfig64(...), xlib(...) → kept verbatim
-    * bare names: stripped of version/macros
+    This is used for dedupe keys: we compare normalized forms so that
+    equivalent deps are treated as the same, but install uses the raw form.
     """
     if not dep or dep.startswith("/") or dep.startswith("%"):
         return ""
@@ -211,46 +255,39 @@ def _normalize_implicit(dep: str) -> str:
     if not dep:
         return ""
 
+    # Keep original forms as-is for installability; dedupe keys are built
+    # from these raw strings lowercased.
     if dep.startswith("pkgconfig(") and dep.endswith(")"):
-        inner = dep[len("pkgconfig("):-1]
-        parts = inner.split(None, 1)
-        name = parts[0]
-        version = parts[1].strip() if len(parts) > 1 else ""
-        if name.endswith("-devel"):
-            name = name[: -len("-devel")]
-        out = f"pkgconfig({name})"
-        if version:
-            out += f" {version}"
-        return out
-
+        return dep
     if dep.startswith("python3dist(") and dep.endswith(")"):
-        return f"python3-{dep[len('python3dist('):-1]}"
-
+        return dep
     if dep.startswith("crate(") and dep.endswith(")"):
         return dep
-
     if dep.startswith(("perl(", "pkgconfig64(", "xlib(")):
         return dep
-
     return dep
 
 
 def to_require(dep: str) -> str:
-    """Normalise a single require entry to an RPM capability/package name.
+    """Normalise a require entry for de-duplication and install checking.
 
-    Uses explicit normalization (keep capability forms as-is, strip versions).
-    For install checks we use implicit normalization to match rpm provides.
+    Uses implicit normalization (the one that matches rpm provides: versions
+    dropped, pkgconfig -devel stripped, python3dist→python3-, crate tags kept
+    verbatim) so identical requirements are treated as the same.
     """
     return _normalize_implicit(dep)
 
 
 def dedupe(entries: list[str]) -> list[str]:
-    """Dedupe while keeping the first occurrence of each normalised form."""
+    """Dedupe while keeping the first occurrence of each normalized form.
+
+    Normalization is now done only for comparison; the original form is kept.
+    """
     seen: dict[str, str] = {}
     for dep in entries:
-        key = to_require(dep).lower()
+        key = _normalize_implicit(dep).lower()
         if key and key not in seen:
-            seen[key] = to_require(dep)
+            seen[key] = dep
     return list(seen.values())
 
 
@@ -309,128 +346,73 @@ def main() -> int:
     pkgs = discover_packages(start, args.pkgs)
     print(f"Discovered {len(pkgs)} package(s) under: {start}")
 
-    unique: list[str] = []
-    unique_pkgs = 0
-    empty_pkgs = 0
-    explicit_all: list[str] = []  # verbatim explicit deps
-    implicit_all: list[str] = []  # macro-expanded implicit deps
     for name in pkgs:
         path = os.path.join(start, name)
         spec = next(iter(glob(os.path.join(path, "SPECS", "*.spec"))))
         explicit = parse_explicit(spec)
-        # Resolve the real buildrequires by running `bm -r`: bm builds inside the
-        # package tree and, after %prep + %generate_buildrequires, assembles the
-        # source package (and exits 11 when a dynamic dep is still missing).
+
         proc = subprocess.run(
             ["bm", "-r", "--move-srpm", ".", spec],
             capture_output=True, text=True, cwd=path,
             env={**os.environ, "RPMTOPDIR": tempfile.mkdtemp()},
         )
-        # bm writes the built SRPM into the package dir (SPECS/ is not where
-        # RPMS/ lands); read its fully-resolved BuildRequires instead of the
-        # spec's raw lines or the noisy build log. The SRPM is created either
-        # way (unless %generate_buildrequires is entirely absent), even on exit
-        # 11, so it is the ground truth for what the build actually needs.
         srpm = (
-            glob(os.path.join(path, f"{os.path.splitext(os.path.basename(spec))[0]}-*.src.rpm"))
+            glob(os.path.join(path, "SRPMS", f"{os.path.splitext(os.path.basename(spec))[0]}-*.src.rpm"))
+            or glob(os.path.join(path, "SRPMS", "*buildreqs.nosrc.rpm"))
+            or glob(os.path.join(path, f"{os.path.splitext(os.path.basename(spec))[0]}-*.src.rpm"))
             or glob(os.path.join(path, "*buildreqs.nosrc.rpm"))
         )
         srpm = srpm[0] if srpm else None
         implicit = []
         if srpm:
             res = subprocess.run(
-                ["rpm", "-q", "--whatrequires", "-p", srpm, "BuildRequires"],
+                ["rpm", "-q", "--requires", "-p", srpm],
                 capture_output=True, text=True,
             )
             if res.returncode == 0:
                 implicit = convert_implicit(res.stdout)
             subprocess.run(["rm", "-f", srpm], check=False)
 
-        # Union per-package: keep explicit verbatim, macro-expanded implicit
-        # from the built SRPM's resolved BuildRequires.
         pkg_entries = explicit + implicit
         if not pkg_entries:
-            empty_pkgs += 1
             print(f"  SKIP (no buildrequires): {name}")
             continue
-        unique_pkgs += 1
-        print(f"  {name}: {len(pkg_entries)} buildrequire(s) "
-              f"({len(explicit)} explicit + {len(implicit)} implicit)")
+
+        # Dedupe per-package
+        pkg_entries = dedupe(pkg_entries)
+        print(f"  {name}: {len(pkg_entries)} unique buildrequire(s)")
+
+        # Check installability
+        unresolved = []
+        for dep in pkg_entries:
+            key = _normalize_implicit(dep)
+            if not is_installed(key):
+                unresolved.append(dep)
+
+        if not unresolved:
+            print(f"  All deps already satisfied for {name}")
+            continue
+
+        print(f"  Unresolved for {name}: {len(unresolved)}")
         with open(os.path.join(path, "BR.captured"), "w") as fh:
             fh.write("\n".join(pkg_entries) + "\n")
-        explicit_all.extend(explicit)
-        implicit_all.extend(implicit)
 
-    # Union across all packages: dedupe with implicit-normalization for
-    # install checking, but preserve explicit form for output.
-    # Build a map: implicit-normalized -> [forms]
-    dep_map: dict[str, list[str]] = {}
-    for dep in explicit_all + implicit_all:
-        key = _normalize_implicit(dep).lower()
-        if not key:
+        if args.dry_run:
+            print(f"  DRY RUN: would install: {' '.join(unresolved)}")
             continue
-        norm_val = _normalize_implicit(dep)
-        if norm_val:
-            dep_map.setdefault(key, []).append(norm_val)
 
-    # Pick one output form per normalized key, preferring python3-<pkg> forms.
-    want: list[str] = []
-    for key, forms in sorted(dep_map.items(), key=lambda kv: kv[0].lower()):
-        chosen = forms[0]
-        for f in forms:
-            if f.startswith("python3-"):
-                chosen = f
-                break
-        if chosen and chosen not in want:
-            want.append(chosen)
-    want = sorted(set(want), key=str.lower)
-
-    out_path = os.path.join(start, "all_buildrequires.txt")
-    with open(out_path, "w") as fh:
-        fh.write("\n".join(want) + "\n")
-    print(
-        f"\nCaptured buildrequires from {unique_pkgs} package(s); "
-        f"{empty_pkgs} with none.\n"
-        f"Total unique buildrequires: {len(want)} -> {out_path}"
-    )
-
-    # Check installability using implicit normalization (matches rpm provides)
-    unresolved = []
-    installed = 0
-    for dep in want:
-        key = _normalize_implicit(dep)
-        if is_installed(key):
-            installed += 1
-        else:
-            unresolved.append(dep)
-    print(f"\nAlready satisfied: {installed}/{len(want)}")
-    print(f"Unresolved: {len(unresolved)}")
-
-    if args.dry_run:
-        print("\n== DRY RUN: would install these (batch %d) ==" % args.batch)
+        # Install in batches of --batch deps
+        total_batches = (len(unresolved) + args.batch - 1) // args.batch
         for i in range(0, len(unresolved), args.batch):
             chunk = unresolved[i:i + args.batch]
-            print(f"  batch {i // args.batch + 1}: " + " ".join(chunk))
-        print("\n(No install performed.)")
-        return 0
+            batch = i // args.batch + 1
+            print(f"\n  == Installing batch {batch}/{total_batches} ({len(chunk)} deps) for {name} ==")
+            print(f"    $ sudo urpmi --auto " + " ".join(chunk))
+            res = subprocess.run(["sudo", "urpmi", "--auto", *chunk])
+            if res.returncode != 0:
+                print(f"    batch {batch} exited {res.returncode}; continuing.",
+                      file=sys.stderr)
 
-    if not unresolved:
-        print("Nothing to install.")
-        return 0
-
-    # Install in batches of --batch deps, each via a single sudo urpmi call.
-    # subprocess.run(list) passes each element as a separate argv, so
-    # pkgconfig(...) parentheses and version specs are preserved literally.
-    total_batches = (len(unresolved) + args.batch - 1) // args.batch
-    for i in range(0, len(unresolved), args.batch):
-        chunk = unresolved[i:i + args.batch]
-        batch = i // args.batch + 1
-        print(f"\n== Installing batch {batch}/{total_batches} ({len(chunk)} deps) ==")
-        print(f"  $ sudo urpmi --auto " + " ".join(chunk))
-        res = subprocess.run(["sudo", "urpmi", "--auto", *chunk])
-        if res.returncode != 0:
-            print(f"  batch {batch} exited {res.returncode}; continuing.",
-                  file=sys.stderr)
     print("\nDone.")
     return 0
 

@@ -8,8 +8,12 @@ description: Update a Mageia RPM to a newer upstream version using mgarepo, spec
 Update an existing Mageia package to a newer upstream version.
 
 ## Instructions
+* **Note: The terminal shell may not be bash (e.g. it could be zsh), so invoke bash scripts explicitly under bash, e.g. `bash script.sh` or `#!/usr/bin/env bash`.
 * Minimize spec changes when updating packages.
 * **Never invoke `rpmbuild` directly — always use `bm`, even for diagnostics.** `bm` builds inside the `<mgarepo>/<package>/` layout and reads the correct `SPECS/`/`SOURCES/`, writing `BUILD/`, `RPMS/`, `SRPMS/` there. A bare `rpmbuild -ba/-bp/-bb` writes to `~/rpmbuild` and looks in `~/rpmbuild/SOURCES`, so it uses the wrong source tree and the wrong output location. To investigate a failure, read the log `SPECS/log.<package>` that `bm` writes, or re-run `bm -p SPECS/<package>.spec` (prep) / `bm -r SPECS/<package>.spec` (prep only) / `bm SPECS/<package>.spec` (full build). Never type `rpmbuild ...` by hand; `bm` calls `rpmbuild` internally, which is fine.
+* The `bm` output goes to a log file in the `SPECS/` directory (e.g. `SPECS/log.<package>`); its stdout and stderr will be mostly blank, so read the log file to check for errors.
+* **Do not scan the entire filesystem to locate files or dependencies.** All lookups must be scoped to the package's `mgarepo` checkout directory (`<mgarepo>/<package>/`) and use the toolchain-provided commands (`urpmi`, `urpmq`, `rpm -q`, etc.). Wide filesystem searches are a sign of misconfiguration and will be rejected.
+* **Before looking into the source code of tools and running tests to determine behavior, do a web search for documentation first.** Consult the official Mageia/rpm/packaging docs, the tool's man page, or a web search — only fall back to code inspection when documentation does not resolve the question.
 * All checkouts and builds live under a single parent directory named
   `mgarepo`. See "Build location" below.
 * Do not change the `sha1.lst` hash file. Leave it untouched even though the `SOURCES/` files no longer match it; a later manual `mgarepo sync` updates it. Do not worry about the mismatch between `SOURCES/` and `sha1.lst` — `bm`/`rpmbuild` do not read `sha1.lst` during builds. (The original instructions wrote `sha1.list`; the actual file is `sha1.lst`.)
@@ -102,6 +106,8 @@ If it appears that the instruction has already been performed then skip to the n
 8. **Fix unpacking errors**
    - If the unpack creates an error look in BUILD to see if the unpack
      directory matches and modify the SPEC if it does not
+   - When handling issues with unpacking sources, consult the online docs
+     for rpm specs before running tests to determine behavior.
 
 9. **Fix dependency errors**:
    If there are errors with missing dependencies, instruct the user to install them by running `urpmi` against the spec file. If the user responds with an error log due to broken dependencies, fix up the dependencies.
@@ -170,6 +176,7 @@ Discovery → User Deps → Build → Next Batch
    - Run the prep stage only: `bm -l -p SPECS/<package>.spec`
    - **Record which dependencies are missing** (from the bm log in `SPECS/log.<package>` or from the prep step's `BuildRequires` failures).
    - **Do not build yet** — the goal is fast discovery of dependency gaps across the whole batch.
+   - **Web search before source inspection.** Before diving into the source code of tools, build systems, or the package itself to determine behavior (e.g. how a macro works, how a build system probes dependencies, whether a feature is on by default), do a web search for documentation first — consult the official Mageia/rpm/packaging docs, the tool's man page, or upstream docs. Only fall back to code inspection when documentation does not resolve the question.
 
 2. **Dependency install (user action)**
    - Report the missing `BuildRequires:` per package to the user and ask them to install the packages with `urpmi`.

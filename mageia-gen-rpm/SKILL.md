@@ -9,6 +9,7 @@ Build a Mageia-compatible RPM from various sources: local SRPM, URL, or Fedora d
 
 ## Instructions
 * **Never invoke `rpmbuild` directly — always use `bm`, even for diagnostics.** `bm` builds inside the `<mgarepo>/<package>/` layout and reads the correct `SPECS/`/`SOURCES/`, writing `BUILD/`, `RPMS/`, `SRPMS/` there. A bare `rpmbuild -ba/-bp/-bb` writes to `~/rpmbuild` and looks in `~/rpmbuild/SOURCES`, so it uses the wrong source tree and the wrong output location. To investigate a failure, read the log `SPECS/log.<package>` that `bm` writes, or re-run `bm -p SPECS/<package>.spec` (prep) / `bm -r SPECS/<package>.spec` (prep only) / `bm SPECS/<package>.spec` (full build). Never type `rpmbuild ...` by hand; `bm` calls `rpmbuild` internally, which is fine.
+* **Use `bm` for every build step, including the SRPM-first workflow.** `bm -s SPECS/<package>.spec` (or `bm -a`) builds the source RPM and binary RPM in the correct output locations. Do not substitute hand-typed `rpmbuild -bs` / `rpmbuild --rebuild` for either the source-RPM or binary-RPM stage; if a manual rpmbuild is unavoidable, it must still be driven from the `<mgarepo>/<package>/` tree with `_topdir`/`_sourcedir` defined to match that layout — never a bare `rpmbuild` from elsewhere.
 * All checkouts and builds live under a single parent directory named
   `mgarepo`. See "Build location" below.
 
@@ -21,6 +22,12 @@ Build a Mageia-compatible RPM from various sources: local SRPM, URL, or Fedora d
    an SRPM (or spec) for the same version already 
    exists. Reuse it directly and convert it to Mageia instead of
    writing a spec from scratch.
+3. **Generate the latest available version.** Detect the current upstream
+   release before writing the spec: check the source's package registry
+   (PyPI, crates.io, npm, ...) or the project's releases/API, plus the
+   Fedora and Opensu/SUSE repos, and build from that latest published
+   stable version. Record what you checked so the version choice is
+   reproducible.
 3. If there is a Fedora or Opensuse SRPM for the package then attempt
    convert that SRPM to Mageia conventions
 4. If there is no SPEC and the file is a rust crate then

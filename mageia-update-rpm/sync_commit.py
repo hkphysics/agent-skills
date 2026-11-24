@@ -169,6 +169,33 @@ def _offer_submit(pkg_dir, pkg_name, version, release, commit_msg):
     }
 
 
+def _is_debug_package(rpm_path):
+    """Return True if the RPM is a debug/debuginfo/debugsource package."""
+    name = Path(rpm_path).name.lower()
+    return any(x in name for x in ("-debuginfo-", "-debugsource-", "debuginfo", "debugsource"))
+
+
+def _is_rpm_installed(rpm_path):
+    """Check if an RPM is already installed by querying the rpm database."""
+    try:
+        # Extract package name and version from rpm file
+        result = subprocess.run(
+            ["rpm", "-q", "-p", rpm_path, "--qf", "%{NAME}-%{VERSION}-%{RELEASE}"],
+            capture_output=True, text=True, check=False
+        )
+        if result.returncode != 0:
+            return False
+        pkg_id = result.stdout.strip()
+        # Check if this exact package is installed
+        result2 = subprocess.run(
+            ["rpm", "-q", pkg_id],
+            capture_output=True, text=True, check=False
+        )
+        return result2.returncode == 0
+    except Exception:
+        return False
+
+
 def process_package(pkg_name, mgarepo_root):
     """Process a single package: check build, show diff, prompt for sync/commit."""
     pkg_dir = Path(mgarepo_root) / pkg_name
@@ -200,6 +227,40 @@ def process_package(pkg_name, mgarepo_root):
     diff = _svn_diff(pkg_dir)
     print(f"\n--- svn diff ---")
     print(diff)
+
+    # Check if built RPMs have been installed; if not, ask user to install them via sudo rpm
+    missing_rpms = []
+    rpms_dir = Path(pkg_dir) / "RPMS"
+    srpms_dir = Path(pkg_dir) / "SRPMS"
+    # Only scan RPMS/ (binary/noarch), not SRPMS/ (source RPMs)
+    all_rpms = list(rpms_dir.rglob("*.rpm")) if rpms_dir.exists() else []
+    
+    for rpm_file in all_rpms:
+        if _is_debug_package(rpm_file):
+            continue  # Skip debug packages
+        if not _is_rpm_installed(rpm_file):
+            missing_rpms.append(rpm_file)
+
+    if missing_rpms:
+        print(f"\nMissing RPMs for {pkg_name} ({len(missing_rpms)}):")
+        for rpm_file in missing_rpms:
+            print(f"  {rpm_file}")
+        try:
+            resp = input(f"\nInstall missing RPMs via 'sudo rpm -Uvh'? [y/N]: ").strip().lower()
+        except EOFError:
+            resp = 'n'
+        if resp in ('y', 'yes'):
+            # Install all missing binary/noarch RPMs in one command
+            rpm_args = " ".join(str(r) for r in missing_rpms)
+            stdout, stderr, rc = _run_cmd(f"sudo rpm -Uvh {rpm_args}", cwd=pkg_dir)
+            if rc == 0:
+                print(f"  ✓ Installed all missing RPMs for {pkg_name}")
+            else:
+                print(f"  ✗ Failed: {stderr or stdout}")
+        else:
+            print("  Skipping RPM installation. Note: sync/commit may fail without dependencies.")
+    else:
+        print("  All RPMs are already installed.")
 
     # If there are no changes, skip sync/commit and go straight to submit
     if diff.strip() in ("", "(no changes)"):
