@@ -23,6 +23,8 @@ Update an existing Mageia package to a newer upstream version.
 * **Never hardcode `/usr/lib64` or `/usr/lib`** — use the `%{_libdir}` macro instead (e.g. `/usr/lib64` on x86_64, `/usr/lib` on ARM). Avoid hardcoding any part of a filename when a macro is available; use `%{name}`, `%{version}`, etc.
 * **Do not list `.debug` files in `%files`.** Debug info is automatically extracted and packaged by `find-debuginfo` into the `-debuginfo` (or `-debugsource`) subpackage. Manually listing a `.debug` path duplicates the file into both the main and the debuginfo package, and breaks on architectures whose `%{_libdir}` differs from x86_64 (e.g. ARM uses `/usr/lib`, not `/usr/lib64`) with a `File not found` error. Never add entries like `/usr/lib/debug/%{_libdir}/lib%{name}.so.*.debug` to `%files`; let the debuginfo machinery handle it.
 * **Do not use bare directories in `%files`.** Never hardcode `/usr/share/pkgconfig/`, `/usr/share/cmake/`, `/usr/share/gtk-doc/`, or any other absolute directory path in the spec. Always use macro-based paths that expand correctly per-architecture and distro: `%{_datadir}/pkgconfig/%{name}.pc`, `%{_datadir}/cmake/%{name}/`, `%{_datadir}/gtk-doc/html/%{name}/`, etc. Bare paths like `/usr/share/pkgconfig/foo.pc` work on x86_64 but break on ARM (where `/usr/lib` is used instead of `/usr/lib64`) and fail `check-files`.
+* **Do not remove functionality to get a spec to build** Do not remove
+  features to get a spec to build (i.e. %check) 
 
 ## Build location
 
@@ -42,8 +44,7 @@ Everything for one package lives under a single parent directory named `mgarepo`
 	
 Rules:
 - Search for an existing `mgarepo` parent directory in this order:
-  1. `./mgarepo` (current working directory)
-  2. `~/mgarepo` (user's home directory)
+  `./mgarepo` (current working directory)
 - If neither exists, create `./mgarepo` in the current directory.
 - Do not search deeper than these two paths; if the user keeps `mgarepo` elsewhere, ask them for its location instead of guessing.
 - To check out a package, first `cd` into the `mgarepo` directory, then run `mgarepo co <package>`; the package lands in `<mgarepo>/<package>/`.
@@ -62,6 +63,7 @@ If it appears that the instruction has already been performed then skip to the n
      ```bash
      mgarepo co <package>
      ```
+	 Do not check out build trees outside of mgarepo
 
 2. **Look online** for a newer version of the package (upstream website, GitHub releases, SourceForge, PyPI, etc.). Determine the new version number and the source file URL.
    Additionally, search for security advisories (CVE, vendor advisories, Mageia security tracker) for the package; collect any relevant security patches and note them for inclusion.
@@ -145,11 +147,14 @@ If it appears that the instruction has already been performed then skip to the n
 
 14. **Fix compile issues**
     - If there are any compile issues, create a new patch to fix those issues or modify build instructions in the spec.
-    - For Python packages that build C/Cython extensions with the Mavenia hardened `-Wl,--no-undefined` linker flag, add an LDFLAGS export in the spec's `%build` section to link against the Python shared library, so the build does not fail with undefined references to Python C API symbols (e.g. `_Py_NoneStruct`, `PyUnicode_FromString`). A version-independent form is:
+    - For Python packages that build C/Cython extensions with the Mageia hardened `-Wl,--no-undefined` linker flag, add an LDFLAGS export in the spec's `%build` section to link against the Python shared library, so the build does not fail with undefined references to Python C API symbols (e.g. `_Py_NoneStruct`, `PyUnicode_FromString`). A version-independent form is:
       ```spec
       export LDFLAGS="-lpython%{python3_version}"
       ```
-      (Place before the Python build macro such as `%pyproject_wheel`.)
+      (Place before the Python build macro such as
+      `%pyproject_wheel`.)  Insert this string if you get an compile
+      error due to lack of python symbols
+	  
 
 15. **Look at the Fedora repo** for recent patches to apply:
     - Check the Fedora dist-git package page (`https://src.fedoraproject.org/rpms/<package>`) for newer patch files and spec changes.

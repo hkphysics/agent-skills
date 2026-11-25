@@ -371,13 +371,13 @@ Examples:
     parser.add_argument('packages', nargs='*', help='Package names to process')
     parser.add_argument('--all', action='store_true', help='Process all packages with built RPMs')
     parser.add_argument('--file', '-f', help='Read package list from file (one per line)')
-    parser.add_argument('--mgarepo-root', default='/home/joe/bench/git/agent-skills/mgarepo',
+    parser.add_argument('--root', default='/home/joe/bench/git/agent-skills/mgarepo',
                         help='Root directory containing package subdirectories')
     parser.add_argument('--dry-run', action='store_true', help='Show what would be done without committing')
 
     args = parser.parse_args()
 
-    mgarepo_root = Path(args.mgarepo_root)
+    mgarepo_root = Path(args.root)
     if not mgarepo_root.exists():
         print(f"Error: mgarepo root not found: {mgarepo_root}", file=sys.stderr)
         sys.exit(1)
