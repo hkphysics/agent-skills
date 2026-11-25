@@ -126,7 +126,7 @@ def _is_already_submitted(pkg_name):
         return None
 
 
-def _offer_submit(pkg_dir, pkg_name, version, release, commit_msg):
+def _offer_submit(pkg_dir, pkg_name, version, release, commit_msg, mgarepo_root):
     """Ask the user whether to run mgarepo submit. Returns the result dict."""
     # Check if package is already available on pkgsubmit.mageia.org
     already = _is_already_submitted(pkg_name)
@@ -156,6 +156,24 @@ def _offer_submit(pkg_dir, pkg_name, version, release, commit_msg):
             return {"package": pkg_name, "status": "error", "error": out, "version": version, "release": release, "commit_message": commit_msg}
         print(f"  mgarepo submit: OK")
         submitted = True
+        # Create submitted directory if it doesn't exist
+        submitted_dir = Path(mgarepo_root) / "submitted"
+        submitted_dir.mkdir(exist_ok=True)
+
+        # Move the package directory to submitted_dir
+        try:
+            new_path = submitted_dir / pkg_dir.name
+            if new_path.exists():
+                # Handle name conflict - maybe append a number?
+                counter = 1
+                while (submitted_dir / f"{pkg_dir.name}-{counter}").exists():
+                    counter += 1
+                new_path = submitted_dir / f"{pkg_dir.name}-{counter}"
+            pkg_dir.rename(new_path)
+            print(f"  Moved {pkg_dir} to {new_path}", file=sys.stderr)
+        except Exception as e:
+            print(f"  Warning: could not move package to submitted directory: {e}", file=sys.stderr)
+
     elif submit_response in ('q', 'quit'):
         return {"package": pkg_name, "status": "quit"}
 
@@ -207,6 +225,41 @@ def process_package(pkg_name, mgarepo_root):
         return {"package": pkg_name, "status": "error", "error": f"No spec file found in {pkg_dir}/SPECS/"}
 
     version, release = _get_spec_version(spec_path)
+
+    # Check if package is already submitted on pkgsubmit.mageia.org
+    already = _is_already_submitted(pkg_name)
+    if already is True:
+        print(f"  {pkg_name} {version}-{release} already appears submitted on pkgsubmit.mageia.org.")
+        try:
+            move_resp = input(f"Move {pkg_name} to submitted directory? [y/N]: ").strip().lower()
+        except EOFError:
+            move_resp = 'n'
+        moved = False
+        if move_resp in ('y', 'yes'):
+            submitted_dir = Path(mgarepo_root) / "submitted"
+            submitted_dir.mkdir(exist_ok=True)
+            new_path = submitted_dir / pkg_dir.name
+            if new_path.exists():
+                counter = 1
+                while (submitted_dir / f"{pkg_dir.name}-{counter}").exists():
+                    counter += 1
+                new_path = submitted_dir / f"{pkg_dir.name}-{counter}"
+            try:
+                pkg_dir.rename(new_path)
+                print(f"  Moved {pkg_dir} to {new_path}")
+                moved = True
+            except Exception as e:
+                print(f"  Warning: could not move package to submitted directory: {e}", file=sys.stderr)
+        # Skip further processing
+        return {
+            "package": pkg_name,
+            "status": "already_submitted",
+            "version": version,
+            "release": release,
+            "moved": moved
+        }
+    elif already is None:
+        print(f"  Could not check pkgsubmit.mageia.org (network error) — proceeding.")
 
     if not _has_built_rpms(pkg_dir):
         return {
@@ -266,7 +319,7 @@ def process_package(pkg_name, mgarepo_root):
     if diff.strip() in ("", "(no changes)"):
         print(f"\nNo changes for {pkg_name} {version}-{release} — skipping sync and commit.")
         commit_msg = f"updated to {version}"
-        return _offer_submit(pkg_dir, pkg_name, version, release, commit_msg)
+        return _offer_submit(pkg_dir, pkg_name, version, release, commit_msg, mgarepo_root)
 
     # Prompt user
     while True:
@@ -288,7 +341,7 @@ def process_package(pkg_name, mgarepo_root):
                 return {"package": pkg_name, "status": "error", "error": out, "version": version, "release": release}
             print(f"  mgarepo ci: OK (message: '{commit_msg}')")
 
-            return _offer_submit(pkg_dir, pkg_name, version, release, commit_msg)
+            return _offer_submit(pkg_dir, pkg_name, version, release, commit_msg, mgarepo_root)
 
         elif response in ('n', 'no', ''):
             return {
@@ -375,6 +428,11 @@ Examples:
             print(f"  ✓ {pkg} {r.get('version')}-{r.get('release')} -> committed")
         elif status == "submitted":
             print(f"  ✓ {pkg} {r.get('version')}-{r.get('release')} -> committed (submitted)")
+        elif status == "already_submitted":
+            if r.get('moved'):
+                print(f"  ✓ {pkg} {r.get('version')}-{r.get('release')} -> already submitted (moved)")
+            else:
+                print(f"  - {pkg} {r.get('version')}-{r.get('release')} -> already submitted (not moved)")
         elif status == "skipped":
             print(f"  ⊘ {pkg} {r.get('version')}-{r.get('release')} -> skipped ({r.get('reason')})")
         elif status == "skip":
