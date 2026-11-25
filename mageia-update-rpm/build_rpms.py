@@ -24,7 +24,7 @@ import subprocess
 import sys
 from pathlib import Path
 
-MAGEIA_ROOT = Path(os.getenv("MAGEIA_ROOT", "."))
+MAGEIA_ROOT = Path(os.getenv("MAGEIA_ROOT", "./mgarepo"))
 INSTBR = os.getenv("MAGEIA_INSTBR",
                    "/home/joe/.pi/agent/skills/mageia-update-rpm/instbr.py")
 DEFAULT_CSV = os.getenv("MAGEIA_CSV", "/tmp/python_no_maintainer.csv")
