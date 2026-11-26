@@ -140,4 +140,4 @@ mageia-improve-rpm --package foo
 ## Notes
 - Always verify the `mgarepo` parent directory before starting.
 - Keep `sha1.lst` untouched — a later manual `mgarepo sync` updates it. Do not worry about the mismatch between `SOURCES/` and `sha1.lst` — `bm`/`rpmbuild` do not read `sha1.lst` during builds. (The original instructions wrote `sha1.list`; the actual file is `sha1.lst`.)
-- Do not include `-Wl,--allow-shlib-undefined` in LDFLAGS; use version-independent linking via `%{python3_version}`.
+- Do not include `-Wl,--allow-shlib-undefined` in LDFLAGS, and **never add an `export LDFLAGS` that links against Python (`-lpython`)** in a Python package.

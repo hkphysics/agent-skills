@@ -17,7 +17,7 @@ Update an existing Mageia package to a newer upstream version.
 * All checkouts and builds live under a single parent directory named
   `mgarepo`. See "Build location" below.
 * Do not change the `sha1.lst` hash file. Leave it untouched even though the `SOURCES/` files no longer match it; a later manual `mgarepo sync` updates it. Do not worry about the mismatch between `SOURCES/` and `sha1.lst` — `bm`/`rpmbuild` do not read `sha1.lst` during builds. (The original instructions wrote `sha1.list`; the actual file is `sha1.lst`.)
-* Do not include `-Wl,--allow-shlib-undefined` in LDFLAGS. Use version-independent linking via `%{python3_version}` instead (see step 14).
+* Do not include `-Wl,--allow-shlib-undefined` in LDFLAGS, and **never add an `export LDFLAGS` that links against Python (`-lpython`)** in a Python package (see step 14).
 * The log files may be in another language such as Chinese.
 * **Use macros instead of hardcoded strings.** In the spec, any string that varies from version to version — URLs, package names, version numbers, build tags, archive/file names — must be written with macros (`%{version}`, `%{name}`, `%{url}`, `%{built_tag}`, etc.) rather than the literal value. Bump `Version:` and let the macros expand; do not paste `foo-1.2.3` or `.../foo-1.2.3.tar.gz` into `Source:` lines. See "Spec macros" below.
 * **Never hardcode `/usr/lib64` or `/usr/lib`** — use the `%{_libdir}` macro instead (e.g. `/usr/lib64` on x86_64, `/usr/lib` on ARM). Avoid hardcoding any part of a filename when a macro is available; use `%{name}`, `%{version}`, etc.
@@ -147,13 +147,7 @@ If it appears that the instruction has already been performed then skip to the n
 
 14. **Fix compile issues**
     - If there are any compile issues, create a new patch to fix those issues or modify build instructions in the spec.
-    - For Python packages that build C/Cython extensions with the Mageia hardened `-Wl,--no-undefined` linker flag, add an LDFLAGS export in the spec's `%build` section to link against the Python shared library, so the build does not fail with undefined references to Python C API symbols (e.g. `_Py_NoneStruct`, `PyUnicode_FromString`). A version-independent form is:
-      ```spec
-      export LDFLAGS="-lpython%{python3_version}"
-      ```
-      (Place before the Python build macro such as
-      `%pyproject_wheel`.)  Insert this string if you get an compile
-      error due to lack of python symbols
+    - **Never add an `export LDFLAGS` in a Python package.** Do not link against the Python shared library (`-lpython`), and do not add any `LDFLAGS` entry for Python — especially never `-Wl,--allow-shlib-undefined`. Linking in Python can break the build in a clean buildroot (mock, build daemons) or at runtime, since the CPython ABI and shared library are provided by the build host, not the package. If a Python package's C/Cython extension build fails with undefined references to Python C API symbols (e.g. `_Py_NoneStruct`, `PyUnicode_FromString`), fix it by correcting the build instructions in the spec (e.g. linking against the proper `python3-devel`/`python3dist` build requirement or using the correct, distro-managed link mechanism) — not by hand-setting `LDFLAGS` to `-lpython%{python3_version}`. Leave `%build` without any `LDFLAGS` export.
 	  
 
 15. **Look at the Fedora repo** for recent patches to apply:
